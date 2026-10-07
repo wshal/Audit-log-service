@@ -1,0 +1,83 @@
+"""
+API routes for Scenario B:
+- POST /audit/retention/apply (Apply configurable retention policy)
+- POST /audit/redact (Structured field-level redaction)
+- GET  /audit/export (Verifiable bulk export for resourceId or actorId)
+"""
+
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.orm import Session
+
+from app.models.retention_redaction import (
+    RedactionRequest,
+    RedactionResult,
+    RetentionPolicyApplyRequest,
+    RetentionPolicyResult,
+    VerifiableExportBundle,
+)
+from app.routers.audit import get_db
+from app.services.lifecycle import LifecycleAndExportService
+
+router = APIRouter(prefix="/audit", tags=["Retention & Redaction"])
+
+
+@router.post(
+    "/retention/apply",
+    response_model=RetentionPolicyResult,
+    summary="Apply data retention policy",
+    description="Soft-archives records older than specified retentionDays while maintaining unbroken hash chain integrity.",
+)
+def apply_retention_policy(
+    request: RetentionPolicyApplyRequest,
+    db: Session = Depends(get_db),
+):
+    return LifecycleAndExportService.apply_retention_policy(
+        session=db,
+        retention_days=request.retentionDays,
+        reason=request.reason,
+    )
+
+
+@router.post(
+    "/redact",
+    response_model=RedactionResult,
+    summary="Structured field-level redaction",
+    description="Redacts sensitive fields in payload using cryptographic commitments without invalidating chain hashes.",
+)
+def redact_audit_record(
+    request: RedactionRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        return LifecycleAndExportService.redact_record_fields(
+            session=db,
+            sequence_num=request.sequenceNum,
+            field_paths=request.fieldPaths,
+            reason=request.reason,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+
+
+@router.get(
+    "/export",
+    response_model=VerifiableExportBundle,
+    summary="Generate self-contained verifiable export bundle",
+    description="Exports all records for actorId or resourceId packaged with boundary metadata and integrity hashes for offline verification.",
+)
+def export_audit_records(
+    actorId: Optional[str] = Query(None, description="Actor identifier to export"),
+    resourceId: Optional[str] = Query(None, description="Resource identifier to export"),
+    db: Session = Depends(get_db),
+):
+    if not actorId and not resourceId:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least one of actorId or resourceId must be supplied for export",
+        )
+    return LifecycleAndExportService.generate_verifiable_export(
+        session=db,
+        actor_id=actorId,
+        resource_id=resourceId,
+    )

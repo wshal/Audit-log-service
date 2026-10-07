@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.routers.audit import router as audit_router
+from app.routers.lifecycle import router as lifecycle_router
 from app.storage.database import get_engine, get_session_factory, init_db
 
 # Engine and session creation
@@ -43,6 +44,7 @@ app.add_middleware(
 
 # Register routers
 app.include_router(audit_router)
+app.include_router(lifecycle_router)
 
 
 @app.get("/health", tags=["Health"])

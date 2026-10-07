@@ -31,4 +31,15 @@ This document records the traceability of AI assistance throughout the developme
   - Upgraded Pydantic models to v2 `model_config` standard.
   - All tests passed (4/4).
 
+### Entry 3: Scenario B — Retention, Structured Redaction & Verifiable Export
+- **Date**: 2026-10-07
+- **Intent**: Implement retention policy, structured cryptographic redaction of sensitive PII, and verifiable bulk export bundles.
+- **AI Proposal**: Use salt-based cryptographic commitments for redacted fields so plaintext values are scrubbed while retaining mathematical proof and unbroken block hashes. Export bundles with bundle-level SHA-256 integrity digest.
+- **Engineer Review**:
+  - Validated that archived records do not trigger false-positive alerts on chain verification.
+  - Confirmed redaction replaces target fields with verifiable commitment tokens without mutating historical content hashes.
+  - Tested that independent third parties can verify exported bundles using only the metadata provided.
+  - All Scenario B tests passed (3/3).
+
+
 
