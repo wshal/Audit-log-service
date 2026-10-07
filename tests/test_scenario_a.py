@@ -1,53 +1,13 @@
 """
-Tests for Scenario A — Core Audit Log Service:
-1. Append-only write operations
-2. Monotonic sequence numbering and genesis linkage
-3. Query filtering by actorId, resourceId, resourceType, eventType, timestamp range
-4. Chain verification passes for untouched ledger
-5. Tamper detection:
-   - Direct database payload mutation is detected
-   - Record deletion is detected (sequence discontinuity)
-   - Block hash tampering is detected
+Tests for Scenario A — Core Audit Log Service.
 """
 
-import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-
 from app.crypto.hasher import GENESIS_PREV_HASH
-from app.main import app
 from app.models.schemas import ViolationType
-from app.routers.audit import get_db
-from app.storage.database import AuditRecordEntity, Base
-
-# Setup isolated in-memory or dedicated SQLite database for testing
-TEST_DATABASE_URL = "sqlite:///./test_scenario_a.db"
-test_engine = create_engine(TEST_DATABASE_URL, connect_args={"check_same_thread": False})
-TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
+from app.storage.database import AuditRecordEntity
 
 
-def override_get_db():
-    db = TestingSessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
-app.dependency_overrides[get_db] = override_get_db
-client = TestClient(app)
-
-
-@pytest.fixture(autouse=True)
-def setup_test_db():
-    Base.metadata.drop_all(bind=test_engine)
-    Base.metadata.create_all(bind=test_engine)
-    yield
-    Base.metadata.drop_all(bind=test_engine)
-
-
-def test_write_and_chain_linkage():
+def test_write_and_chain_linkage(client):
     # Write event 1 (Genesis block)
     resp1 = client.post(
         "/audit/events",
@@ -81,7 +41,6 @@ def test_write_and_chain_linkage():
     assert resp2.status_code == 201
     data2 = resp2.json()
     assert data2["sequenceNum"] == 2
-    # Chain must link to previous block's recordHash
     assert data2["prevHash"] == data1["recordHash"]
 
     # Verify chain
@@ -93,8 +52,7 @@ def test_write_and_chain_linkage():
     assert v_data["violationType"] == ViolationType.NONE.value
 
 
-def test_query_filtering():
-    # Insert multiple distinct events
+def test_query_filtering(client):
     events = [
         {"eventType": "LOGIN", "actorId": "alice", "resourceType": "AUTH", "resourceId": "1", "timestamp": "2026-10-07T10:00:00Z"},
         {"eventType": "TRADE", "actorId": "alice", "resourceType": "ORDER", "resourceId": "100", "timestamp": "2026-10-07T10:10:00Z"},
@@ -125,10 +83,10 @@ def test_query_filtering():
     assert resp_time.json()["total"] == 2
 
 
-def test_tamper_detection_direct_content_mutation():
+def test_tamper_detection_direct_content_mutation(client, db_session):
     """
-    Simulates malicious actor modifying payload directly in SQLite data store.
-    GET /audit/verify must catch CONTENT_HASH_MISMATCH.
+    Directly modifies SQLite payload column to simulate malicious storage tampering.
+    GET /audit/verify must detect CONTENT_HASH_MISMATCH.
     """
     client.post("/audit/events", json={"eventType": "TRANSFER", "actorId": "eve", "resourceType": "ACCOUNT", "resourceId": "9", "payload": {"amount": 500}, "timestamp": "2026-10-07T10:00:00Z"})
     client.post("/audit/events", json={"eventType": "TRANSFER", "actorId": "eve", "resourceType": "ACCOUNT", "resourceId": "9", "payload": {"amount": 1000}, "timestamp": "2026-10-07T10:01:00Z"})
@@ -136,14 +94,12 @@ def test_tamper_detection_direct_content_mutation():
     # Intact initially
     assert client.get("/audit/verify").json()["intact"] is True
 
-    # Tamper with record 1 payload directly via raw DB session
-    db = TestingSessionLocal()
-    rec1 = db.query(AuditRecordEntity).filter_by(sequence_num=1).first()
-    rec1.payload_json = '{"amount":999999}'  # Maliciously altered payload
-    db.commit()
-    db.close()
+    # Mutate record 1 payload directly in SQLite
+    rec1 = db_session.query(AuditRecordEntity).filter_by(sequence_num=1).first()
+    rec1.payload_json = '{"amount":999999}'
+    db_session.commit()
 
-    # Re-verify -> MUST detect tampering
+    # Verify detection
     verify_resp = client.get("/audit/verify")
     assert verify_resp.status_code == 200
     result = verify_resp.json()
@@ -152,23 +108,18 @@ def test_tamper_detection_direct_content_mutation():
     assert result["violationType"] == ViolationType.CONTENT_HASH_MISMATCH.value
 
 
-def test_tamper_detection_record_deletion():
+def test_tamper_detection_record_deletion(client, db_session):
     """
-    Simulates malicious actor deleting a record from the ledger.
-    GET /audit/verify must catch SEQUENCE_DISCONTINUITY or CHAIN_LINK_BROKEN.
+    Directly deletes a record in SQLite to simulate malicious truncation/deletion.
     """
     client.post("/audit/events", json={"eventType": "EVENT_A", "actorId": "u1", "resourceType": "R", "resourceId": "1", "timestamp": "2026-10-07T10:00:00Z"})
     client.post("/audit/events", json={"eventType": "EVENT_B", "actorId": "u1", "resourceType": "R", "resourceId": "1", "timestamp": "2026-10-07T10:01:00Z"})
     client.post("/audit/events", json={"eventType": "EVENT_C", "actorId": "u1", "resourceType": "R", "resourceId": "1", "timestamp": "2026-10-07T10:02:00Z"})
 
-    # Delete record 2 directly in DB
-    db = TestingSessionLocal()
-    rec2 = db.query(AuditRecordEntity).filter_by(sequence_num=2).first()
-    db.delete(rec2)
-    db.commit()
-    db.close()
+    rec2 = db_session.query(AuditRecordEntity).filter_by(sequence_num=2).first()
+    db_session.delete(rec2)
+    db_session.commit()
 
-    # Verify -> MUST catch broken sequence / link
     verify_resp = client.get("/audit/verify")
     result = verify_resp.json()
     assert result["intact"] is False
