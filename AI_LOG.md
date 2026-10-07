@@ -20,3 +20,15 @@ This document records the traceability of AI assistance throughout the developme
   - Refined cryptographic approach: SHA-256 with explicit canonical sorting (keys sorted, no unescaped whitespaces) to eliminate serialization non-determinism across platforms.
   - Required explicit genesis block hash specification (`GENESIS_BLOCK_PREV_HASH = "0" * 64`).
   - Added dedicated redaction mechanism using HMAC / Merkle-leaf or salted field hashes so redacting a sensitive value retains mathematical proof of original integrity.
+
+### Entry 2: Scenario A — Core Append-Only Ledger & Tamper Verification
+- **Date**: 2026-10-07
+- **Intent**: Implement Write API, Query API with multi-field filtering, and Chain Verification with tamper detection.
+- **AI Proposal**: Implement fast sequence lookup and SHA-256 chain calculation over RFC 8785 canonical JSON. Provide `GET /audit/verify` that returns detailed violation classification.
+- **Engineer Review**:
+  - Validated strict append-only guarantee: no UPDATE or DELETE API routes exist.
+  - Verified tamper detection by adding automated tests mutating SQLite database contents directly and confirming that `CONTENT_HASH_MISMATCH` and `SEQUENCE_DISCONTINUITY` are reliably flagged.
+  - Upgraded Pydantic models to v2 `model_config` standard.
+  - All tests passed (4/4).
+
+
