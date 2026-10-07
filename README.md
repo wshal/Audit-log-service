@@ -45,53 +45,94 @@ This service guarantees an append-only, tamper-evident audit ledger:
 ## 4. Repository Structure
 
 ```text
-├── ATTESTATION.md              # Section 0.4 Candidate declaration
-├── AI_LOG.md                   # Section 4.3 AI traceability log
-├── README.md                   # Architecture, design decisions, run instructions
-├── requirements.txt            # Python dependencies
+├── ATTESTATION.md                    # Section 0.4 Candidate declaration
+├── AI_LOG.md                         # Section 4.3 AI traceability log
+├── README.md                         # Architecture, design decisions, run instructions
+├── pytest.ini                        # Pytest configuration
+├── requirements.txt                  # Python dependencies
+├── docs/
+│   ├── architecture.md               # Deep-dive architecture and design trade-offs
+│   ├── final_engineering_summary.md  # Final engineering summary and risk analysis
+│   └── scenario_c_normalization.md   # Requirement normalization and scope boundary
 ├── app/
 │   ├── __init__.py
-│   ├── main.py                 # FastAPI application entrypoint
-│   ├── config.py               # Application configuration
-│   ├── models/                 # Domain & API schemas
-│   ├── crypto/                 # SHA-256 hashing, canonical serialization, redaction
-│   ├── storage/                # Database layer, append-only repository
-│   ├── services/               # Chain verification, retention, compliance engine
-│   └── routers/                # API route definitions
+│   ├── main.py                       # FastAPI application entrypoint
+│   ├── config.py                     # Configuration settings
+│   ├── models/
+│   │   ├── schemas.py                # Core Audit Record schemas (Scenario A)
+│   │   ├── retention_redaction.py    # Retention, Redaction, Export schemas (Scenario B)
+│   │   └── compliance.py             # Regulatory Compliance schemas (Scenario C)
+│   ├── crypto/
+│   │   ├── hasher.py                 # RFC 8785 canonical JSON & SHA-256 hash chaining
+│   │   └── redaction.py              # Salted field commitments for structured redaction
+│   ├── storage/
+│   │   ├── database.py               # Database entities, indexes, and session factory
+│   │   └── repository.py             # Append-only audit ledger repository
+│   ├── services/
+│   │   ├── verifier.py               # Ledger chain verification & tamper detector
+│   │   ├── lifecycle.py              # Retention archival, redaction, verifiable export
+│   │   └── compliance.py             # Compliance report & anomaly detection engine
+│   └── routers/
+│       ├── audit.py                  # Core endpoints (Write, Query, Verify)
+│       ├── lifecycle.py              # Lifecycle endpoints (Retention, Redact, Export)
+│       └── compliance.py             # Compliance endpoints (Client access report)
 └── tests/
-    ├── __init__.py
-    ├── test_scenario_a.py      # Core ingestion, query, chain verify, tamper detection
-    ├── test_scenario_b.py      # Retention, structured redaction, verifiable export
-    └── test_scenario_c.py      # Regulatory compliance audit queries & reports
+    ├── conftest.py                   # Test fixtures and database isolation
+    ├── test_scenario_a.py            # Scenario A tests (Write, Query, Verify, Tamper Detection)
+    ├── test_scenario_b.py            # Scenario B tests (Retention, Redaction, Export)
+    └── test_scenario_c.py            # Scenario C tests (Compliance reports & Anomaly detection)
 ```
 
 ---
 
 ## 5. Local Setup & Execution Instructions
 
-### Prerequisites
-- Python 3.12+ installed
-
-### Setup Environment
+### 1. Activate Environment & Install Dependencies
 ```bash
-python -m venv .venv
 # On Windows PowerShell:
 .\.venv\Scripts\Activate.ps1
-# On Linux/macOS:
-source .venv/bin/activate
 
+# Install requirements (if not already installed):
 pip install -r requirements.txt
 ```
 
-### Run the Service
-```bash
-uvicorn app.main:app --reload --port 8000
-```
-Interactive API documentation will be available at:
-- Swagger UI: `http://localhost:8000/docs`
-- ReDoc: `http://localhost:8000/redoc`
-
-### Run Test Suite
+### 2. Run Test Suite
 ```bash
 pytest -v
 ```
+All 8 automated test suites validate:
+- Append-only write & hash chain linking
+- Multi-parameter indexed querying
+- Tamper detection upon direct database payload modification
+- Tamper detection upon record deletion
+- Retention policy soft-archival without false positives
+- Field-level redaction preserving historical chain validity
+- Independent verifiable bulk export bundle integrity
+- Regulatory compliance reporting and anomaly detection
+
+### 3. Start Local Microservice
+```bash
+uvicorn app.main:app --reload --port 8000
+```
+Interactive API documentation and live playground will be accessible at:
+- **Swagger UI**: `http://localhost:8000/docs`
+- **ReDoc**: `http://localhost:8000/redoc`
+
+---
+
+## 6. Live Defense Walkthrough (Quick Reference)
+
+1. **Verify Ledger Authenticity**:
+   - Call `GET /audit/verify` -> returns `{"intact": true, "violationType": "NONE"}`.
+2. **Demonstrate Tampering Detection**:
+   - Write events using `POST /audit/events`.
+   - Directly modify SQLite payload or delete a record in `audit_records`.
+   - Call `GET /audit/verify` -> returns `{"intact": false, "violationType": "CONTENT_HASH_MISMATCH"}` (or `SEQUENCE_DISCONTINUITY`) along with the exact broken record sequence number.
+3. **Demonstrate Privacy Redaction**:
+   - Call `POST /audit/redact` with field names `["ssn", "bankAccount"]`.
+   - Verify values are masked to `[REDACTED:COMMITMENT:...]` while `GET /audit/verify` confirms the hash chain remains intact.
+4. **Demonstrate Regulatory Compliance Report**:
+   - Call `GET /audit/compliance/client-access?clientId=client-act-001`.
+   - Observe actor breakdown, access justifications, anomaly flagging, and chain verification.
+
+
