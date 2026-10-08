@@ -3,7 +3,7 @@ Retention, Structured Redaction, and Verifiable Export schemas (Scenario B).
 """
 
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class RetentionPolicyApplyRequest(BaseModel):
@@ -11,7 +11,7 @@ class RetentionPolicyApplyRequest(BaseModel):
     Request to archive records older than a retention cutoff or window.
     """
     retentionDays: int = Field(..., gt=0, description="Age threshold in days for archival")
-    reason: str = Field(default="Standard data retention policy schedule", description="Audit trail reason")
+    reason: str = Field(default="Standard data retention policy schedule", min_length=1, max_length=256, description="Audit trail reason")
 
 
 class RetentionPolicyResult(BaseModel):
@@ -30,7 +30,16 @@ class RedactionRequest(BaseModel):
     """
     sequenceNum: int = Field(..., description="Target record sequence number")
     fieldPaths: List[str] = Field(..., min_length=1, description="List of top-level JSON payload keys to redact, e.g. ['accountNumber', 'ssn']")
-    reason: str = Field(..., description="Regulatory justification, e.g. GDPR Right to be Forgotten, PII removal")
+    reason: str = Field(..., min_length=1, max_length=256, description="Regulatory justification, e.g. GDPR Right to be Forgotten, PII removal")
+
+    @field_validator("fieldPaths")
+    @classmethod
+    def validate_unique_top_level_fields(cls, fields: List[str]) -> List[str]:
+        if any(not field or "." in field for field in fields):
+            raise ValueError("fieldPaths must contain non-empty top-level payload keys")
+        if len(set(fields)) != len(fields):
+            raise ValueError("fieldPaths must not contain duplicates")
+        return fields
 
 
 class RedactionResult(BaseModel):

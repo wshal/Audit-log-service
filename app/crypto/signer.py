@@ -3,6 +3,7 @@
 import base64
 import json
 import os
+from pathlib import Path
 from functools import lru_cache
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
@@ -19,12 +20,28 @@ def _private_key() -> Ed25519PrivateKey:
         return Ed25519PrivateKey.from_private_bytes(raw)
     if os.getenv("AUDIT_ENV", "development").lower() == "production":
         raise RuntimeError("AUDIT_SIGNING_PRIVATE_KEY is required in production")
-    # Intentionally ephemeral: convenient locally, but signatures cannot survive a restart.
-    return Ed25519PrivateKey.generate()
+    # Persist the development key outside version control so a local ledger remains
+    # verifiable after restart. Production must always supply external key material.
+    key_path = Path(os.getenv("AUDIT_DEVELOPMENT_KEY_PATH", "local_data/audit_signing_ed25519.key"))
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+    if key_path.exists():
+        raw = base64.b64decode(key_path.read_text(encoding="ascii"), validate=True)
+        if len(raw) != 32:
+            raise RuntimeError("Development signing key file is invalid")
+        return Ed25519PrivateKey.from_private_bytes(raw)
+    key = Ed25519PrivateKey.generate()
+    from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat
+    raw = key.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())
+    key_path.write_text(base64.b64encode(raw).decode("ascii"), encoding="ascii")
+    try:
+        os.chmod(key_path, 0o600)
+    except OSError:
+        pass
+    return key
 
 
 def signing_key_id() -> str:
-    return os.getenv("AUDIT_SIGNING_KEY_ID", "development-ephemeral")
+    return os.getenv("AUDIT_SIGNING_KEY_ID", "development-local")
 
 
 def public_key_b64() -> str:

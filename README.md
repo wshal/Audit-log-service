@@ -124,7 +124,7 @@ Supported RBAC roles: `reader`, `writer`, `retention_admin`, `privacy_officer`, 
 ```bash
 pytest -v
 ```
-All **18 automated tests** validate:
+All **22 automated tests** validate:
 - Append-only write & hash chain linking
 - Multi-parameter indexed querying
 - Tamper detection upon direct database payload modification
@@ -138,6 +138,7 @@ All **18 automated tests** validate:
 - API authentication/role enforcement, Ed25519 record signatures, offline signature verification, lifecycle-manifest witnesses, and archival-state tamper detection
 
 See [docs/audit_review.md](docs/audit_review.md) for the implementation audit and hardening record.
+For a copy/paste clean-database walkthrough of every scenario with expected outputs, see [docs/manual_validation.md](docs/manual_validation.md).
 
 ### 3. Start Local Microservice
 ```bash

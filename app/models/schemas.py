@@ -30,16 +30,16 @@ class AuditEventCreate(BaseModel):
     resourceType: str = Field(..., min_length=1, max_length=128, description="Type of resource accessed or modified")
     resourceId: str = Field(..., min_length=1, max_length=256, description="Unique identifier of resource")
     payload: Dict[str, Any] = Field(default_factory=dict, description="Structured event payload")
-    timestamp: Optional[str] = Field(
-        default=None,
+    timestamp: str = Field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         description="ISO-8601 timestamp. If omitted, server assigns authoritative UTC timestamp.",
     )
 
     @field_validator("timestamp")
     @classmethod
-    def validate_timestamp(cls, v: Optional[str]) -> str:
-        if v is None or not v.strip():
-            return datetime.now(timezone.utc).isoformat()
+    def validate_timestamp(cls, v: str) -> str:
+        if not v.strip():
+            return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         try:
             return normalize_iso8601(v)
         except Exception:

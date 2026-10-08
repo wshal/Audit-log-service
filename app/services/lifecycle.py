@@ -63,7 +63,7 @@ class LifecycleAndExportService:
         if session.bind.dialect.name == "sqlite":
             session.execute(text("BEGIN IMMEDIATE"))
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=retention_days)
-        cutoff_iso = cutoff_date.isoformat()
+        cutoff_iso = cutoff_date.isoformat().replace("+00:00", "Z")
 
         records_to_archive = (
             session.query(AuditRecordEntity)
@@ -73,7 +73,7 @@ class LifecycleAndExportService:
         )
 
         archived_seqs = []
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
         for rec in records_to_archive:
             rec.is_archived = True

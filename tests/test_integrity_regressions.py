@@ -66,6 +66,12 @@ def test_redaction_rejects_unknown_or_duplicate_fields(client):
     )
     assert duplicate.status_code == 422
 
+    duplicate_in_one_request = client.post(
+        "/audit/redact",
+        json={"sequenceNum": 1, "fieldPaths": ["ssn", "ssn"], "reason": "Privacy request"},
+    )
+    assert duplicate_in_one_request.status_code == 422
+
 
 def test_timestamps_are_normalized_and_invalid_ranges_are_rejected(client):
     response = client.post(
@@ -77,6 +83,11 @@ def test_timestamps_are_normalized_and_invalid_ranges_are_rejected(client):
     )
     assert response.status_code == 201
     assert response.json()["timestamp"] == "2026-10-07T06:30:00Z"
+    server_timestamp = client.post(
+        "/audit/events",
+        json={"eventType": "LOGIN", "actorId": "user", "resourceType": "SESSION", "resourceId": "2", "payload": {}},
+    ).json()["timestamp"]
+    assert server_timestamp.endswith("Z")
     assert client.get("/audit/events?fromTime=2026-10-08T00:00:00Z&toTime=2026-10-07T00:00:00Z").status_code == 422
     assert client.get("/audit/events?fromTime=not-a-time").status_code == 422
 

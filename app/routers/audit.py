@@ -43,9 +43,18 @@ def get_db():
 )
 def append_audit_event(
     event_in: AuditEventCreate,
-    _: Principal = Depends(require_roles("writer")),
+    principal: Principal = Depends(require_roles("writer")),
     db: Session = Depends(get_db),
 ):
+    if (
+        "admin" not in principal.roles
+        and "audit_proxy" not in principal.roles
+        and event_in.actorId != principal.subject
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="actorId must match the authenticated subject unless the caller has audit_proxy role",
+        )
     repo = AuditLedgerRepository(db)
     record = repo.append_event(event_in)
     return record.to_read_model()

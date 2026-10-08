@@ -13,7 +13,7 @@
 | Direct mutation/deletion detection | Verification reports first failed sequence/type. | Met and tested. |
 | Retention/archive | Records are soft-archived; original event/hash fields stay present. | Meets the stated soft-delete option, but archival state itself is not hash-bound. |
 | Structured redaction | PII is replaced with commitment tokens. A chained `AUDIT_RECORD_REDACTED` manifest now binds the post-redaction payload and metadata. | Improved: later changes to a redacted record are detected. |
-| Bulk export | Filtered records plus record hashes and bundle hash are returned. | Partial: an unsigned, filtered bundle is not a complete independent proof of inclusion in the global chain. |
+| Bulk export | Filtered records, lifecycle witnesses, signed record hashes, public keys, and a bundle hash are returned. | Partial: it authenticates records but does not yet provide a privacy-preserving proof of inclusion in one global-chain checkpoint. |
 | Compliance normalization/report | Ambiguity document and client-access report exist. | Met as a deliberately scoped prototype. |
 | AI process / submission artifacts | Attestation, AI log, architecture, scenario-C normalization, summary, tests, and setup are present. | Mostly met; the quality-gate claims should name the actual commands/results rather than claim unconfigured tooling. |
 
@@ -39,4 +39,4 @@ The new signature and manifest checks intentionally reject records written by th
 
 ## Validation run
 
-`\.venv\Scripts\python.exe -m pytest -q` completed successfully: **18 passed**.
+`\.venv\Scripts\python.exe -m pytest -q` completed successfully: **22 passed**.

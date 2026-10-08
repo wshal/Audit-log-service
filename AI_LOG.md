@@ -73,4 +73,14 @@ This document records the traceability of AI assistance throughout the developme
   - Added API-key, role, signature-forgery, offline-export, redaction-witness, and archival-tampering regression tests.
   - Validation: `\.venv\Scripts\python.exe -m pytest -q` => 18 passed.
 
-
+### Entry 7: Independent Regression Review and Demonstration Validation
+- **Date**: 2026-10-08
+- **Intent**: Re-review the hardened code for defects introduced by security changes, verify all scenarios together, and provide a reproducible manual defense flow.
+- **AI Proposal**: Test actor identity binding, key persistence across local restart, lifecycle/export evidence, compliance classification, and timestamp consistency.
+- **Engineer Decision**: **Accepted with explicit environment boundaries**.
+  - Persisted the ignored development signing key locally so a local ledger remains verifiable after restart; production still requires externally supplied key material.
+  - Prevented ordinary writers from claiming another actor identity; only `admin` or `audit_proxy` may do so.
+  - Restricted compliance reports to documented client-access resource/event types and validate report time ranges.
+  - Normalized server-generated and lifecycle timestamps to UTC `Z`; reject duplicate/invalid redaction paths.
+  - Added a full Scenario A/B/C/security workflow test and copy/paste manual-validation guide.
+  - Validation: `\.venv\Scripts\python.exe -m pytest -q` => 22 passed; compilation and dependency checks passed.

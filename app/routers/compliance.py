@@ -4,7 +4,7 @@ API routes for Scenario C:
 """
 
 from typing import Optional
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.models.compliance import ComplianceAuditReport
@@ -29,10 +29,9 @@ def get_client_access_audit_report(
     db: Session = Depends(get_db),
     _: Principal = Depends(require_roles("compliance_reviewer")),
 ):
-    return ComplianceService.generate_client_access_audit_report(
-        session=db,
-        client_id=clientId,
-        from_time=fromTime,
-        to_time=toTime,
-        actor_id=actorId,
-    )
+    try:
+        return ComplianceService.generate_client_access_audit_report(
+            session=db, client_id=clientId, from_time=fromTime, to_time=toTime, actor_id=actorId,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc))

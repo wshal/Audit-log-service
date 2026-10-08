@@ -47,7 +47,7 @@ To proceed effectively while maintaining strict compliance integrity, the requir
 
 | In Scope (Implemented) | Out of Scope (Documented Rationale) |
 |---|---|
-| Dedicated `GET /audit/compliance/client-access` query endpoint with regulatory filtering (client ID, actor, timeframe). | Direct integration with enterprise SAML/OAuth SSO identity providers (mocked via standard actor headers). |
+| Dedicated `GET /audit/compliance/client-access` query endpoint with regulatory filtering (client ID, actor, timeframe) and API-key role control. | Direct integration with enterprise SAML/OAuth SSO identity providers (the prototype uses configured API-key principals). |
 | Aggregated compliance summary report with actor breakdown and access justification tracking. | Continuous Kafka streaming ingestion (the REST ledger provides equivalent durability and append-only semantics). |
 | Anomaly detection for unusual bulk read frequency or missing compliance justifications. | Long-term WORM (Write Once Read Many) optical disc hardware storage drivers (handled via cloud object storage immutability policies in production). |
 | Cryptographic chain validation attached to compliance reports. | |

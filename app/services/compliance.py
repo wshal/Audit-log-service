@@ -16,6 +16,12 @@ from app.models.compliance import (
 )
 from app.services.verifier import ChainVerificationService
 from app.storage.database import AuditRecordEntity
+from app.models.schemas import normalize_iso8601
+
+CLIENT_ACCESS_EVENT_TYPES = {
+    "ACCOUNT_VIEWED", "ACCOUNT_MODIFIED", "PORTFOLIO_EXPORTED", "SSN_ACCESSED",
+    "HOLDINGS_EXPORTED",
+}
 
 
 class ComplianceService:
@@ -31,8 +37,17 @@ class ComplianceService:
         Extracts audit events for client data access, analyzes actor patterns,
         flags regulatory anomalies, and verifies cryptographic integrity.
         """
+        if from_time:
+            from_time = normalize_iso8601(from_time)
+        if to_time:
+            to_time = normalize_iso8601(to_time)
+        if from_time and to_time and from_time > to_time:
+            raise ValueError("fromTime must not be later than toTime")
+
         query = session.query(AuditRecordEntity).filter(
-            AuditRecordEntity.resource_id == client_id
+            AuditRecordEntity.resource_id == client_id,
+            AuditRecordEntity.resource_type.in_(["CLIENT_ACCOUNT", "PORTFOLIO"]),
+            AuditRecordEntity.event_type.in_(CLIENT_ACCESS_EVENT_TYPES),
         )
 
         if from_time:

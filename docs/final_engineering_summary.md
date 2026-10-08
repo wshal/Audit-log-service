@@ -37,7 +37,7 @@ This submission implements a working **Tamper-Evident Audit Log Service prototyp
 
 ## 4. Verification and Quality Sign-Off
 
-- **Unit & Integration Tests**: 12 automated tests covering core append, multi-field filtering, direct DB tamper detection, record deletion detection, retention archival, structured redaction, verifiable export, regulatory compliance reports, post-redaction mutation, invalid lifecycle input, timestamp validation, and concurrent SQLite appends.
+- **Unit & Integration Tests**: 22 automated tests covering core append, multi-field filtering, direct DB tamper detection, record deletion detection, retention archival, structured redaction, signed export, regulatory compliance reports, post-redaction mutation, invalid lifecycle input, timestamp validation, concurrent SQLite appends, API-key/RBAC enforcement, actor-identity binding, signature forgery, lifecycle witnesses, key persistence, and the full Scenario A/B/C workflow.
 - **Test Results**: All 8 tests passing (`pytest -v`).
 - **Clean Git History**: Structured commits reflecting continuous development from design to delivery.
 - **Attestation**: Formally verified in `ATTESTATION.md`.
