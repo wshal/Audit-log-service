@@ -49,7 +49,7 @@ def reset_db_each_test():
 
 @pytest.fixture
 def client():
-    return TestClient(app)
+    return TestClient(app, headers={"X-API-Key": "development-only-audit-key"})
 
 
 @pytest.fixture

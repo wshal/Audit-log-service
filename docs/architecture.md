@@ -21,7 +21,7 @@ The **Audit Log Service** provides an immutable, append-only, tamper-evident led
 
 ## 2. Cryptographic Architecture
 
-### 2.1 Canonical Serialization (RFC 8785)
+### 2.1 Deterministic Serialization
 A common vulnerability in hash chaining is serialization non-determinism across platforms, operating systems, and language runtimes (e.g., whitespace variations, unsorted dictionary keys).
 
 We enforce deterministic canonical serialization:
@@ -95,7 +95,7 @@ graph LR
 - **Structured Redaction**: `POST /audit/redact` replaces targeted sensitive fields (e.g. SSN, bank accounts) with cryptographic commitment tokens:
   $$\text{Commitment} = \text{SHA-256}(\text{salt} + ":" + \text{fieldName} + ":" + C(\text{value}))$$
   The original content hash and record hash are preserved, enabling mathematical privacy compliance without invalidating block history.
-- **Bulk Export**: `GET /audit/export` packages records for an actor or resource with boundary metadata and a root `bundleIntegrityHash` for offline independent auditing.
+- **Bulk Export**: `GET /audit/export` packages records for an actor or resource with boundary metadata and a root `bundleIntegrityHash`. A production independently verifiable export additionally needs a signed checkpoint and inclusion proof; see `docs/audit_review.md`.
 
 ### Scenario C: Ambiguous Requirement Normalization
 - **Normalized Requirement**: Regulatory compliance audit reporting for client account access trails under SEC Rule 17a-4 and FINRA Rule 4511.

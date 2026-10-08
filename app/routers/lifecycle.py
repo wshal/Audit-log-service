@@ -18,6 +18,7 @@ from app.models.retention_redaction import (
 )
 from app.routers.audit import get_db
 from app.services.lifecycle import LifecycleAndExportService
+from app.security import Principal, require_roles
 
 router = APIRouter(prefix="/audit", tags=["Retention & Redaction"])
 
@@ -31,6 +32,7 @@ router = APIRouter(prefix="/audit", tags=["Retention & Redaction"])
 def apply_retention_policy(
     request: RetentionPolicyApplyRequest,
     db: Session = Depends(get_db),
+    _: Principal = Depends(require_roles("retention_admin")),
 ):
     return LifecycleAndExportService.apply_retention_policy(
         session=db,
@@ -48,6 +50,7 @@ def apply_retention_policy(
 def redact_audit_record(
     request: RedactionRequest,
     db: Session = Depends(get_db),
+    _: Principal = Depends(require_roles("privacy_officer")),
 ):
     try:
         return LifecycleAndExportService.redact_record_fields(
@@ -57,7 +60,8 @@ def redact_audit_record(
             reason=request.reason,
         )
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+        code = status.HTTP_404_NOT_FOUND if "not found" in str(e) else status.HTTP_422_UNPROCESSABLE_CONTENT
+        raise HTTPException(status_code=code, detail=str(e))
 
 
 @router.get(
@@ -70,6 +74,7 @@ def export_audit_records(
     actorId: Optional[str] = Query(None, description="Actor identifier to export"),
     resourceId: Optional[str] = Query(None, description="Resource identifier to export"),
     db: Session = Depends(get_db),
+    _: Principal = Depends(require_roles("exporter")),
 ):
     if not actorId and not resourceId:
         raise HTTPException(

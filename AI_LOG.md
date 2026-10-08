@@ -50,6 +50,27 @@ This document records the traceability of AI assistance throughout the developme
   - Implemented regulatory anomaly detection flagging uncertified accesses or high-frequency anomalies.
   - Executed complete test suite across all scenarios: 8/8 tests passed.
 
+### Entry 5: Post-Implementation Integrity Review and Hardening
+- **Date**: 2026-10-08
+- **Intent**: Review requirements and implementation boundaries, then add regression coverage for discovered failure modes.
+- **AI Proposal**: Flagged that redacted records bypassed content verification and that concurrent SQLite writers could calculate the same sequence number. Proposed a chained redaction manifest, serialized SQLite writes, UTC timestamp normalization, and adversarial tests.
+- **Engineer Decision**: **Accepted with explicit scope boundaries**.
+  - Added a chained `AUDIT_RECORD_REDACTED` manifest binding the redacted payload and metadata, then verified subsequent mutation is detected.
+  - Added `BEGIN IMMEDIATE` serialization for SQLite writes; confirmed with 24 competing writers.
+  - Added timestamp/range validation and invalid-redaction handling.
+  - Documented the remaining production requirements: authorization, key-managed cryptographic erasure, external signed checkpoints, and independently verifiable export inclusion proofs.
+  - Validation: `\.venv\Scripts\python.exe -m pytest -q` => 12 passed.
 
+### Entry 6: Security Boundary and Lifecycle Integrity Hardening
+- **Date**: 2026-10-08
+- **Intent**: Address the root causes identified in the review: unauthenticated control-plane operations, hash-chain rewrites by a database-only attacker, mutable archival state, and exports lacking lifecycle evidence.
+- **AI Proposal**: Add API-key RBAC, Ed25519 signatures held outside the ledger, a rotation-safe public-key ring, signed lifecycle manifests for redaction and archival, and export witnesses.
+- **Engineer Decision**: **Accepted with production configuration constraints**.
+  - Added role checks to every API route and disabled wildcard credentialed CORS.
+  - Signed each record and verify signatures using a key ID/public-key ring; production requires externally supplied signing material.
+  - Made archival actions immutable, signed ledger events and verify their state against manifests.
+  - Included associated lifecycle manifests and public verification keys in exports.
+  - Added API-key, role, signature-forgery, offline-export, redaction-witness, and archival-tampering regression tests.
+  - Validation: `\.venv\Scripts\python.exe -m pytest -q` => 18 passed.
 
 

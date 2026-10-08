@@ -14,6 +14,8 @@ from sqlalchemy import (
     String,
     Text,
     create_engine,
+    inspect,
+    text,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
 
@@ -40,6 +42,8 @@ class AuditRecordEntity(Base):
     content_hash = Column(String(64), nullable=False)
     prev_hash = Column(String(64), nullable=False)
     record_hash = Column(String(64), nullable=False)
+    record_signature = Column(Text, nullable=True)
+    signing_key_id = Column(String(128), nullable=True)
 
     # Lifecycle & Redaction support (Scenario B)
     is_archived = Column(Boolean, default=False, nullable=False)
@@ -69,6 +73,8 @@ class AuditRecordEntity(Base):
             "contentHash": self.content_hash,
             "prevHash": self.prev_hash,
             "recordHash": self.record_hash,
+            "recordSignature": self.record_signature,
+            "signingKeyId": self.signing_key_id,
             "isArchived": self.is_archived,
             "archivedAt": self.archived_at,
             "redactionMetadata": json.loads(self.redaction_metadata_json) if self.redaction_metadata_json else None,
@@ -83,8 +89,15 @@ def get_engine(database_url: str = "sqlite:///audit_ledger.db"):
 
 
 def init_db(engine):
-    """Creates tables if not already present."""
+    """Creates tables and applies the two additive prototype schema migrations."""
     Base.metadata.create_all(bind=engine)
+    if engine.dialect.name == "sqlite":
+        existing = {column["name"] for column in inspect(engine).get_columns("audit_records")}
+        with engine.begin() as connection:
+            if "record_signature" not in existing:
+                connection.execute(text("ALTER TABLE audit_records ADD COLUMN record_signature TEXT"))
+            if "signing_key_id" not in existing:
+                connection.execute(text("ALTER TABLE audit_records ADD COLUMN signing_key_id VARCHAR(128)"))
 
 
 def get_session_factory(engine):

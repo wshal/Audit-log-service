@@ -7,6 +7,7 @@ API routes for Scenario A:
 
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.models.schemas import (
@@ -19,6 +20,7 @@ from app.models.schemas import (
 from app.services.verifier import ChainVerificationService
 from app.storage.database import AuditRecordEntity, get_engine, get_session_factory
 from app.storage.repository import AuditLedgerRepository
+from app.security import Principal, require_roles
 
 router = APIRouter(prefix="/audit", tags=["Audit Ledger"])
 
@@ -41,6 +43,7 @@ def get_db():
 )
 def append_audit_event(
     event_in: AuditEventCreate,
+    _: Principal = Depends(require_roles("writer")),
     db: Session = Depends(get_db),
 ):
     repo = AuditLedgerRepository(db)
@@ -64,17 +67,21 @@ def query_audit_events(
     limit: int = Query(50, ge=1, le=1000, description="Page limit"),
     offset: int = Query(0, ge=0, description="Offset index"),
     db: Session = Depends(get_db),
+    _: Principal = Depends(require_roles("reader")),
 ):
-    filters = QueryFilters(
-        actorId=actorId,
-        resourceType=resourceType,
-        resourceId=resourceId,
-        eventType=eventType,
-        fromTime=fromTime,
-        toTime=toTime,
-        limit=limit,
-        offset=offset,
-    )
+    try:
+        filters = QueryFilters(
+            actorId=actorId,
+            resourceType=resourceType,
+            resourceId=resourceId,
+            eventType=eventType,
+            fromTime=fromTime,
+            toTime=toTime,
+            limit=limit,
+            offset=offset,
+        )
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc))
     repo = AuditLedgerRepository(db)
     records, total = repo.query_events(filters)
 
@@ -92,6 +99,9 @@ def query_audit_events(
     summary="Cryptographic chain verification endpoint",
     description="Walks the full audit ledger, sequentially verifying hashes and chain linkage to detect any tampering.",
 )
-def verify_audit_chain(db: Session = Depends(get_db)):
+def verify_audit_chain(
+    db: Session = Depends(get_db),
+    _: Principal = Depends(require_roles("reader")),
+):
     result = ChainVerificationService.verify_ledger(db)
     return result

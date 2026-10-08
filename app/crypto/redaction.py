@@ -37,10 +37,11 @@ def apply_structured_redaction(
     Returns: (redacted_payload, redaction_metadata)
     """
     metadata = existing_metadata.copy() if existing_metadata else {"commitments": {}, "history": []}
+    metadata.setdefault("commitments", {})
     redacted_payload = payload.copy()
 
     for field in fields_to_redact:
-        if field in redacted_payload:
+        if field in redacted_payload and field not in metadata["commitments"]:
             original_val = redacted_payload[field]
             salt = secrets.token_hex(16)
             commitment = compute_field_commitment(field, original_val, salt)

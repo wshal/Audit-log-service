@@ -3,19 +3,32 @@ Domain schemas and Pydantic validation models for the Audit Log Service.
 """
 
 from datetime import datetime, timezone
+import json
 from enum import Enum
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+def normalize_iso8601(value: str) -> str:
+    """Parse an ISO-8601 instant and return one canonical UTC representation."""
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("Timestamp must include a UTC offset or 'Z'")
+    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
 class AuditEventCreate(BaseModel):
     """
     Schema for appending an audit event (Scenario A Write API).
     """
-    eventType: str = Field(..., description="Action or event type, e.g. USER_LOGIN, RECORD_UPDATED")
-    actorId: str = Field(..., description="Identifier of actor initiating action")
-    resourceType: str = Field(..., description="Type of resource accessed or modified")
-    resourceId: str = Field(..., description="Unique identifier of resource")
+    eventType: str = Field(..., min_length=1, max_length=128, description="Action or event type, e.g. USER_LOGIN, RECORD_UPDATED")
+    actorId: str = Field(..., min_length=1, max_length=128, description="Identifier of actor initiating action")
+    resourceType: str = Field(..., min_length=1, max_length=128, description="Type of resource accessed or modified")
+    resourceId: str = Field(..., min_length=1, max_length=256, description="Unique identifier of resource")
     payload: Dict[str, Any] = Field(default_factory=dict, description="Structured event payload")
     timestamp: Optional[str] = Field(
         default=None,
@@ -28,11 +41,26 @@ class AuditEventCreate(BaseModel):
         if v is None or not v.strip():
             return datetime.now(timezone.utc).isoformat()
         try:
-            # Validate ISO format
-            datetime.fromisoformat(v.replace("Z", "+00:00"))
-            return v
+            return normalize_iso8601(v)
         except Exception:
             raise ValueError("Timestamp must be valid ISO-8601 format (e.g. 2026-10-07T10:00:00Z)")
+
+    @field_validator("payload")
+    @classmethod
+    def validate_payload_size_and_depth(cls, value: Dict[str, Any]) -> Dict[str, Any]:
+        if len(_canonical_json(value).encode("utf-8")) > 65_536:
+            raise ValueError("Payload must not exceed 64 KiB when serialized")
+
+        def depth(item: Any, level: int = 0) -> int:
+            if isinstance(item, dict):
+                return max((depth(child, level + 1) for child in item.values()), default=level)
+            if isinstance(item, list):
+                return max((depth(child, level + 1) for child in item), default=level)
+            return level
+
+        if depth(value) > 10:
+            raise ValueError("Payload nesting must not exceed 10 levels")
+        return value
 
 
 class AuditRecordRead(BaseModel):
@@ -50,6 +78,8 @@ class AuditRecordRead(BaseModel):
     contentHash: str = Field(..., description="SHA-256 hash of event content fields")
     prevHash: str = Field(..., description="SHA-256 hash of previous audit record in chain")
     recordHash: str = Field(..., description="SHA-256 hash binding sequence, contentHash, and prevHash")
+    recordSignature: Optional[str] = Field(default=None, description="Base64 Ed25519 signature over recordHash")
+    signingKeyId: Optional[str] = Field(default=None, description="Identifier of the record signing key")
     isArchived: bool = Field(default=False, description="Flag for retention policy archival (Scenario B)")
     archivedAt: Optional[str] = Field(default=None, description="Timestamp of archival")
     redactionMetadata: Optional[Dict[str, Any]] = Field(
@@ -73,6 +103,17 @@ class QueryFilters(BaseModel):
     limit: int = Field(default=50, ge=1, le=1000)
     offset: int = Field(default=0, ge=0)
 
+    @field_validator("fromTime", "toTime")
+    @classmethod
+    def validate_query_timestamp(cls, v: Optional[str]) -> Optional[str]:
+        return normalize_iso8601(v) if v else v
+
+    @model_validator(mode="after")
+    def validate_time_range(self):
+        if self.fromTime and self.toTime and self.fromTime > self.toTime:
+            raise ValueError("fromTime must not be later than toTime")
+        return self
+
 
 class PaginatedAuditResponse(BaseModel):
     """
@@ -92,6 +133,8 @@ class ViolationType(str, Enum):
     GENESIS_MISMATCH = "GENESIS_MISMATCH"
     RECORD_HASH_MISMATCH = "RECORD_HASH_MISMATCH"
     UNAUTHORIZED_ARCHIVAL = "UNAUTHORIZED_ARCHIVAL"
+    MALFORMED_RECORD = "MALFORMED_RECORD"
+    SIGNATURE_MISMATCH = "SIGNATURE_MISMATCH"
 
 
 class VerificationResult(BaseModel):

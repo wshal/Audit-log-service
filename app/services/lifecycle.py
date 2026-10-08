@@ -6,6 +6,7 @@ import json
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.crypto.hasher import canonical_json, compute_sha256
@@ -17,9 +18,36 @@ from app.models.retention_redaction import (
 )
 from app.storage.database import AuditRecordEntity
 from app.storage.repository import AuditLedgerRepository
+from app.models.schemas import AuditEventCreate
+from app.crypto.signer import sign_record_hash, signing_key_id
+from app.crypto.signer import public_key_ring
 
 
 class LifecycleAndExportService:
+    @staticmethod
+    def _append_lifecycle_journal(
+        session: Session, event_type: str, resource_id: str, payload: Dict[str, Any]
+    ) -> AuditRecordEntity:
+        """Append a system lifecycle event inside the caller's locked transaction."""
+        latest = session.query(AuditRecordEntity).order_by(AuditRecordEntity.sequence_num.desc()).first()
+        timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        from app.crypto.hasher import compute_event_content_hash, compute_record_chain_hash
+        content_hash = compute_event_content_hash(
+            event_type, "audit-lifecycle-service", "AUDIT_RECORD", resource_id, payload, timestamp
+        )
+        record_hash = compute_record_chain_hash(latest.sequence_num + 1, content_hash, latest.record_hash)
+        journal = AuditRecordEntity(
+            sequence_num=latest.sequence_num + 1, event_type=event_type,
+            actor_id="audit-lifecycle-service", resource_type="AUDIT_RECORD", resource_id=resource_id,
+            payload_json=canonical_json(payload), timestamp=timestamp, content_hash=content_hash,
+            prev_hash=latest.record_hash, record_hash=record_hash,
+            record_signature=sign_record_hash(record_hash), signing_key_id=signing_key_id(),
+            is_archived=False,
+        )
+        session.add(journal)
+        session.flush()
+        return journal
+
     @staticmethod
     def apply_retention_policy(
         session: Session,
@@ -32,6 +60,8 @@ class LifecycleAndExportService:
         Chain verification will confirm all records are present and unbroken without
         false-positive alerts for legitimately archived records.
         """
+        if session.bind.dialect.name == "sqlite":
+            session.execute(text("BEGIN IMMEDIATE"))
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=retention_days)
         cutoff_iso = cutoff_date.isoformat()
 
@@ -51,6 +81,18 @@ class LifecycleAndExportService:
             rec.archival_reason = reason
             archived_seqs.append(rec.sequence_num)
 
+        session.flush()
+        for rec in records_to_archive:
+            archive_state = {
+                "archivalReason": rec.archival_reason,
+                "archivedAt": rec.archived_at,
+                "isArchived": True,
+                "sequenceNum": rec.sequence_num,
+            }
+            LifecycleAndExportService._append_lifecycle_journal(
+                session, "AUDIT_RECORD_ARCHIVED", str(rec.sequence_num),
+                {"archiveStateHash": compute_sha256(canonical_json(archive_state)), **archive_state},
+            )
         session.commit()
 
         return RetentionPolicyResult(
@@ -72,6 +114,9 @@ class LifecycleAndExportService:
         Replaces sensitive plaintext values with cryptographic commitments while preserving
         original contentHash and recordHash integrity in the blockchain.
         """
+        if session.bind.dialect.name == "sqlite":
+            session.execute(text("BEGIN IMMEDIATE"))
+
         rec = (
             session.query(AuditRecordEntity)
             .filter(AuditRecordEntity.sequence_num == sequence_num)
@@ -82,6 +127,13 @@ class LifecycleAndExportService:
 
         current_payload = json.loads(rec.payload_json)
         existing_meta = json.loads(rec.redaction_metadata_json) if rec.redaction_metadata_json else None
+
+        unknown_fields = [field for field in field_paths if field not in current_payload]
+        already_redacted = [field for field in field_paths if field in (existing_meta or {}).get("commitments", {})]
+        if unknown_fields:
+            raise ValueError(f"Payload fields missing: {', '.join(unknown_fields)}")
+        if already_redacted:
+            raise ValueError(f"Payload fields already redacted: {', '.join(already_redacted)}")
 
         redacted_payload, metadata = apply_structured_redaction(
             payload=current_payload,
@@ -98,9 +150,28 @@ class LifecycleAndExportService:
             "fields": field_paths,
         })
 
+        # A redacted payload no longer reproduces the original content hash. Bind a
+        # canonical snapshot of the legally redacted representation in a new,
+        # chained audit event so subsequent storage edits remain detectable.
+        redacted_payload_hash = compute_sha256(canonical_json(redacted_payload))
+        metadata_hash = compute_sha256(canonical_json(metadata))
+
         rec.payload_json = canonical_json(redacted_payload)
         rec.redaction_metadata_json = canonical_json(metadata)
 
+        # Flush the lifecycle mutation, then append the immutable manifest in the
+        # same transaction.
+        session.flush()
+        LifecycleAndExportService._append_lifecycle_journal(
+            session, "AUDIT_RECORD_REDACTED", str(rec.sequence_num), {
+                "metadataHash": metadata_hash,
+                "originalContentHash": rec.content_hash,
+                "originalRecordHash": rec.record_hash,
+                "redactedPayloadHash": redacted_payload_hash,
+                "redactedSequenceNum": rec.sequence_num,
+                "reason": reason,
+            },
+        )
         session.commit()
         session.refresh(rec)
 
@@ -136,10 +207,27 @@ class LifecycleAndExportService:
         records = query.order_by(AuditRecordEntity.sequence_num.asc()).all()
 
         record_dicts = [r.to_read_model() for r in records]
+        selected_sequences = {r.sequence_num for r in records}
+        manifests = []
+        lifecycle_records = session.query(AuditRecordEntity).filter(
+            AuditRecordEntity.event_type.in_(["AUDIT_RECORD_REDACTED", "AUDIT_RECORD_ARCHIVED"])
+        ).order_by(AuditRecordEntity.sequence_num.asc()).all()
+        for lifecycle_record in lifecycle_records:
+            try:
+                payload = json.loads(lifecycle_record.payload_json)
+                target = payload.get("redactedSequenceNum", payload.get("sequenceNum"))
+                if target in selected_sequences:
+                    manifests.append(lifecycle_record.to_read_model())
+            except json.JSONDecodeError:
+                continue
         
         # Calculate bundle-level integrity hash: SHA-256 over canonical list of record hashes
         record_hashes = [r.record_hash for r in records]
         bundle_hash = compute_sha256(canonical_json(record_hashes))
+
+        signing_key_ids = {r.signing_key_id for r in records}
+        signing_key_ids.update(m.get("signingKeyId") for m in manifests)
+        trusted_keys = public_key_ring()
 
         return VerifiableExportBundle(
             exportId=str(uuid.uuid4()),
@@ -150,5 +238,11 @@ class LifecycleAndExportService:
             endSequenceNum=records[-1].sequence_num if records else None,
             genesisPrevHash=records[0].prev_hash if records else "",
             records=record_dicts,
+            integrityManifests=manifests,
             bundleIntegrityHash=bundle_hash,
+            signingPublicKeys={
+                key_id: trusted_keys[key_id]
+                for key_id in signing_key_ids
+                if key_id in trusted_keys
+            },
         )

@@ -14,9 +14,12 @@ from sqlalchemy.orm import Session
 
 from app.crypto.hasher import (
     GENESIS_PREV_HASH,
+    canonical_json,
     compute_event_content_hash,
     compute_record_chain_hash,
+    compute_sha256,
 )
+from app.crypto.signer import public_key_for_id, verify_record_signature
 from app.models.schemas import VerificationResult, ViolationType
 from app.storage.database import AuditRecordEntity
 from app.storage.repository import AuditLedgerRepository
@@ -40,6 +43,23 @@ class ChainVerificationService:
             )
 
         expected_prev_hash = GENESIS_PREV_HASH
+        redaction_manifests = {}
+        archive_manifests = {}
+        for manifest in records:
+            if manifest.event_type == "AUDIT_RECORD_ARCHIVED":
+                try:
+                    payload = json.loads(manifest.payload_json)
+                    archive_manifests.setdefault(payload["sequenceNum"], []).append(payload)
+                except (json.JSONDecodeError, KeyError, TypeError):
+                    continue
+            elif manifest.event_type == "AUDIT_RECORD_REDACTED":
+                try:
+                    payload = json.loads(manifest.payload_json)
+                    target = payload["redactedSequenceNum"]
+                    redaction_manifests.setdefault(target, []).append(payload)
+                except (json.JSONDecodeError, KeyError, TypeError):
+                    # The manifest's own content-hash verification below will report it.
+                    continue
 
         for idx, rec in enumerate(records):
             expected_seq = idx + 1
@@ -87,8 +107,16 @@ class ChainVerificationService:
                     )
 
             # 3. Check content integrity (with redaction handling if applicable)
-            payload = json.loads(rec.payload_json)
-            redaction_meta = json.loads(rec.redaction_metadata_json) if rec.redaction_metadata_json else None
+            try:
+                payload = json.loads(rec.payload_json)
+                redaction_meta = json.loads(rec.redaction_metadata_json) if rec.redaction_metadata_json else None
+            except json.JSONDecodeError:
+                return VerificationResult(
+                    intact=False, recordsVerified=idx,
+                    firstBrokenSequence=rec.sequence_num, firstBrokenRecordId=rec.id,
+                    violationType=ViolationType.MALFORMED_RECORD,
+                    details="Stored JSON is malformed.",
+                )
 
             # If the record has NOT undergone field-level redaction, recomputing content hash must match stored content_hash
             if not redaction_meta:
@@ -113,10 +141,43 @@ class ChainVerificationService:
                         ),
                     )
             else:
-                # If redacted, check structured redaction validity (Scenario B)
-                # The stored content_hash is preserved, but we also ensure redaction metadata is cryptographically sound
-                # We will detail this in Scenario B
-                pass
+                payload_hash = compute_sha256(canonical_json(payload))
+                metadata_hash = compute_sha256(canonical_json(redaction_meta))
+                manifests = redaction_manifests.get(rec.sequence_num, [])
+                matching_manifest = next((m for m in manifests if (
+                    m.get("originalContentHash") == rec.content_hash
+                    and m.get("originalRecordHash") == rec.record_hash
+                    and m.get("redactedPayloadHash") == payload_hash
+                    and m.get("metadataHash") == metadata_hash
+                )), None)
+                if not matching_manifest:
+                    return VerificationResult(
+                        intact=False, recordsVerified=idx,
+                        firstBrokenSequence=rec.sequence_num, firstBrokenRecordId=rec.id,
+                        violationType=ViolationType.CONTENT_HASH_MISMATCH,
+                        details="Redacted content or its metadata does not match an immutable redaction manifest.",
+                    )
+
+            archive_state = {
+                "archivalReason": rec.archival_reason,
+                "archivedAt": rec.archived_at,
+                "isArchived": True,
+                "sequenceNum": rec.sequence_num,
+            }
+            archived_manifests = archive_manifests.get(rec.sequence_num, [])
+            archive_matches = any(m.get("archiveStateHash") == compute_sha256(canonical_json(archive_state)) for m in archived_manifests)
+            if rec.is_archived and not archive_matches:
+                return VerificationResult(
+                    intact=False, recordsVerified=idx, firstBrokenSequence=rec.sequence_num,
+                    firstBrokenRecordId=rec.id, violationType=ViolationType.UNAUTHORIZED_ARCHIVAL,
+                    details="Archived record does not match an immutable archival manifest.",
+                )
+            if not rec.is_archived and archived_manifests:
+                return VerificationResult(
+                    intact=False, recordsVerified=idx, firstBrokenSequence=rec.sequence_num,
+                    firstBrokenRecordId=rec.id, violationType=ViolationType.UNAUTHORIZED_ARCHIVAL,
+                    details="An archival manifest exists but the record is no longer archived.",
+                )
 
             # 4. Check block record hash integrity
             recomputed_record_hash = compute_record_chain_hash(
@@ -135,6 +196,22 @@ class ChainVerificationService:
                         f"Record block hash mismatch at sequence {rec.sequence_num}: "
                         f"recomputed record_hash '{recomputed_record_hash}' != stored '{rec.record_hash}'."
                     ),
+                )
+
+            # A valid signature makes recomputing a forged chain insufficient for
+            # a database-only attacker. The verification key is configured outside
+            # the ledger and is included in export bundles for offline checks.
+            public_key = public_key_for_id(rec.signing_key_id)
+            if not rec.record_signature or not public_key or not verify_record_signature(
+                rec.record_hash, rec.record_signature, public_key
+            ):
+                return VerificationResult(
+                    intact=False,
+                    recordsVerified=idx,
+                    firstBrokenSequence=rec.sequence_num,
+                    firstBrokenRecordId=rec.id,
+                    violationType=ViolationType.SIGNATURE_MISMATCH,
+                    details="Record signature is missing or invalid for the configured signing key.",
                 )
 
             # Update expected_prev_hash for next iteration

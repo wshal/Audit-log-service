@@ -6,7 +6,8 @@ Exposes no UPDATE or DELETE operations on core audit logs.
 
 import json
 from typing import List, Optional, Tuple
-from sqlalchemy import desc, func
+from sqlalchemy import desc, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.crypto.hasher import (
@@ -17,6 +18,7 @@ from app.crypto.hasher import (
 )
 from app.models.schemas import AuditEventCreate, QueryFilters
 from app.storage.database import AuditRecordEntity
+from app.crypto.signer import sign_record_hash, signing_key_id
 
 
 class AuditLedgerRepository:
@@ -29,7 +31,13 @@ class AuditLedgerRepository:
         Fetches the previous tip of the chain, increments sequence_num,
         computes content hash and record hash, and persists the new block.
         """
-        # Lock or retrieve the latest block in the ledger
+        # SQLite has no row-level SELECT ... FOR UPDATE. BEGIN IMMEDIATE takes the
+        # single writer lock before reading the tip, preventing two requests from
+        # calculating the same next sequence number/previous hash.
+        if self.session.bind.dialect.name == "sqlite":
+            self.session.execute(text("BEGIN IMMEDIATE"))
+
+        # Retrieve the latest block while the write transaction is held.
         latest_record = (
             self.session.query(AuditRecordEntity)
             .order_by(desc(AuditRecordEntity.sequence_num))
@@ -71,6 +79,8 @@ class AuditLedgerRepository:
             content_hash=content_hash,
             prev_hash=prev_hash,
             record_hash=record_hash,
+            record_signature=sign_record_hash(record_hash),
+            signing_key_id=signing_key_id(),
             is_archived=False,
             archived_at=None,
             archival_reason=None,
@@ -78,7 +88,11 @@ class AuditLedgerRepository:
         )
 
         self.session.add(record_entity)
-        self.session.commit()
+        try:
+            self.session.commit()
+        except IntegrityError:
+            self.session.rollback()
+            raise
         self.session.refresh(record_entity)
         return record_entity
 

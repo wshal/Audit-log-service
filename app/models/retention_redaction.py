@@ -29,7 +29,7 @@ class RedactionRequest(BaseModel):
     Request to redact specific sensitive keys in a record's payload (e.g. SSN, accountNumber).
     """
     sequenceNum: int = Field(..., description="Target record sequence number")
-    fieldPaths: List[str] = Field(..., description="List of JSON payload keys to redact, e.g. ['accountNumber', 'ssn']")
+    fieldPaths: List[str] = Field(..., min_length=1, description="List of top-level JSON payload keys to redact, e.g. ['accountNumber', 'ssn']")
     reason: str = Field(..., description="Regulatory justification, e.g. GDPR Right to be Forgotten, PII removal")
 
 
@@ -57,11 +57,17 @@ class VerifiableExportBundle(BaseModel):
     endSequenceNum: Optional[int]
     genesisPrevHash: str
     records: List[Dict[str, Any]]
+    integrityManifests: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Signed lifecycle manifests associated with exported records",
+    )
     bundleIntegrityHash: str = Field(
         ...,
         description="SHA-256 hash over the canonical sequence of record hashes in the export"
     )
+    signingPublicKeys: Dict[str, str] = Field(..., description="Trusted signing key-id to Base64 Ed25519 public-key map")
     verificationInstructions: str = (
-        "To verify this bundle independently: 1. Confirm each record's contentHash matches canonical content. "
-        "2. Walk the chain to verify prevHash links. 3. Recompute bundleIntegrityHash across all record hashes."
+        "To verify: confirm each record contentHash and recordHash, verify recordSignature using signingPublicKey, "
+        "then recompute bundleIntegrityHash across record hashes. A filtered bundle does not prove chain inclusion "
+        "without an external checkpoint/inclusion proof."
     )

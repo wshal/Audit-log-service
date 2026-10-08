@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.models.compliance import ComplianceAuditReport
 from app.routers.audit import get_db
 from app.services.compliance import ComplianceService
+from app.security import Principal, require_roles
 
 router = APIRouter(prefix="/audit/compliance", tags=["Regulatory Compliance"])
 
@@ -26,6 +27,7 @@ def get_client_access_audit_report(
     toTime: Optional[str] = Query(None, description="End of regulatory audit window (ISO-8601)"),
     actorId: Optional[str] = Query(None, description="Filter accesses by specific actor"),
     db: Session = Depends(get_db),
+    _: Principal = Depends(require_roles("compliance_reviewer")),
 ):
     return ComplianceService.generate_client_access_audit_report(
         session=db,

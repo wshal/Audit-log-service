@@ -46,7 +46,8 @@ def test_retention_policy_archival_and_chain_intact(client):
     assert verify_resp.status_code == 200
     v_data = verify_resp.json()
     assert v_data["intact"] is True
-    assert v_data["recordsVerified"] == 2
+    # Retention itself is an immutable chained lifecycle event.
+    assert v_data["recordsVerified"] == 3
 
 
 def test_structured_redaction_preserves_chain(client):
