@@ -53,3 +53,5 @@ htmlcov/
 # OS files
 .DS_Store
 Thumbs.db
+
+docs/swagger_walkthrough_runbook.md
