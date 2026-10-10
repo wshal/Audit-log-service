@@ -74,18 +74,40 @@ class AuditLedgerRepository:
                 # Never discard or combine caller-owned work with allocation.
                 raise RuntimeError("Ledger allocator requires an explicitly ended caller transaction")
             session.execute(text("BEGIN IMMEDIATE"))
+            state = None
         else:
             if session.in_transaction():
                 raise RuntimeError("Ledger allocator requires an explicitly ended caller transaction")
-            session.execute(text(
-                "INSERT INTO ledger_state (singleton_id, next_sequence, tip_hash, state_version) "
-                "VALUES (1, 1, :genesis, 1) ON CONFLICT (singleton_id) DO NOTHING"
-            ), {"genesis": GENESIS_PREV_HASH})
+            # Lock an existing singleton before attempting initialization. An
+            # upsert against an already-present row can leave a conflicting
+            # tuple lock that multiple transactions then try to upgrade with
+            # FOR UPDATE, producing a PostgreSQL lock convoy/deadlock.
+            state = (
+                session.query(LedgerStateEntity)
+                .with_for_update()
+                .filter(LedgerStateEntity.singleton_id == 1)
+                .one_or_none()
+            )
+            if state is None:
+                session.execute(text(
+                    "INSERT INTO ledger_state (singleton_id, next_sequence, tip_hash, state_version) "
+                    "VALUES (1, 1, :genesis, 1) ON CONFLICT (singleton_id) DO NOTHING"
+                ), {"genesis": GENESIS_PREV_HASH})
+                state = (
+                    session.query(LedgerStateEntity)
+                    .with_for_update()
+                    .filter(LedgerStateEntity.singleton_id == 1)
+                    .one_or_none()
+                )
         try:
-            state = session.query(LedgerStateEntity)
-            if dialect != "sqlite":
-                state = state.with_for_update()
-            ledger_state = state.filter(LedgerStateEntity.singleton_id == 1).one_or_none()
+            if dialect == "sqlite":
+                ledger_state = (
+                    session.query(LedgerStateEntity)
+                    .filter(LedgerStateEntity.singleton_id == 1)
+                    .one_or_none()
+                )
+            else:
+                ledger_state = state
             if ledger_state is None:
                 has_records = session.query(AuditRecordEntity.id).first() is not None
                 if has_records:

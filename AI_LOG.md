@@ -374,3 +374,13 @@ This document records the traceability of AI assistance throughout the developme
   - Spawned repository workers began with process-local readiness state `uninitialized`, causing `ensure_ready()` to return HTTP 503 before allocation. The test now runs explicit empty-ledger initialization in the parent and establishes the child readiness precondition before calling the repository directly.
 - **Validation**: PostgreSQL test collection completed with **6 passed, 7 skipped** locally; Docker/PostgreSQL is unavailable. SQLite migration/integrity tests passed **32**; full suite passed **132** with **7 skipped** and the existing Starlette/httpx deprecation warning. Compileall and `git diff --check` passed.
 - **Limitations**: Real PostgreSQL migration, constraint, and concurrency execution remains unverified locally and must be confirmed by CI against PostgreSQL 16.
+
+### Entry 34: Correct PostgreSQL singleton-lock contention and reflection portability
+- **Date**: 2026-10-11
+- **Intent**: Remediate the reported PostgreSQL Gate 2 failure without reducing concurrency or weakening readiness/integrity checks.
+- **Changes**:
+  - PostgreSQL allocator access now locks an existing `ledger_state` singleton with `SELECT ... FOR UPDATE` before any initialization upsert, avoiding conflicting tuple-lock upgrades under concurrent writers. Conflict-safe insertion remains only for the genuinely absent-row initialization race.
+  - The concurrent test explicitly initializes the empty ledger and establishes readiness in each spawned direct-service worker; production `ensure_ready()` remains unchanged.
+  - Cross-dialect ledger check validation and reflected `tip_hash` assertions remain semantic/name-based while invalid-DML enforcement is retained.
+- **Validation**: SQLite migration/integrity tests passed **32**; full suite passed **132** with **7 skipped** and the existing Starlette/httpx warning. Compileall and `git diff --check` passed. Real PostgreSQL execution remains pending CI.
+- **Limitations**: The supplied CI excerpt showed cleanup SIGTERM (`-15`) rather than an underlying worker traceback; the lock-ordering fix is based on the current allocator path and must be confirmed by the real PostgreSQL job.
