@@ -138,7 +138,10 @@ The PostgreSQL tests include direct DML checks for the singleton, sequence,
 tip-hash, state-version, and audit-sequence constraints. Each expected failure
 uses its own transaction so a rejected statement cannot poison later checks.
 The fixture creates and resets the guarded test schema per test, keeping the
-integration cases order-independent.
+integration cases order-independent. Check validation uses stable constraint
+names and semantic reflected expressions because PostgreSQL may add casts or
+parentheses to `get_check_constraints()` SQL text; invalid tip-hash DML remains
+the enforcement test.
 
 ### PostgreSQL concurrency and transaction validation (Gate 2)
 

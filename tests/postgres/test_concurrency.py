@@ -10,10 +10,10 @@ from sqlalchemy import event
 from sqlalchemy.orm import sessionmaker
 
 from app.models.schemas import AuditEventCreate
-from app.runtime_state import preflight_scope
+from app.runtime_state import preflight_scope, set_state
 from app.security import Principal
 from app.services.lifecycle import LifecycleAndExportService
-from app.storage.database import AuditRecordEntity, LedgerStateEntity, run_migrations
+from app.storage.database import AuditRecordEntity, LedgerStateEntity, initialize_ledger_state, run_migrations
 from app.storage.database import AuditEpochTransitionEntity
 from app.storage.repository import AuditLedgerRepository
 from app.services.verifier import ChainVerificationService
@@ -26,6 +26,10 @@ def _append_in_process(database_url: str, index: int) -> int:
     engine = create_engine(database_url, pool_pre_ping=True)
     session = sessionmaker(autocommit=False, autoflush=False, bind=engine)()
     try:
+        # Child processes do not inherit the application's in-memory readiness
+        # state. The parent has already migrated and initialized this empty,
+        # verified test ledger; establish that direct-service precondition here.
+        set_state("healthy")
         event = AuditEventCreate(
             eventType="POSTGRES_CONCURRENT_WRITE",
             actorId=f"process-{index}",
@@ -103,6 +107,7 @@ def _provision_test_signing_key(monkeypatch):
 def test_postgres_independent_processes_serialize_append_and_preserve_chain(postgres_engine, monkeypatch):
     _provision_test_signing_key(monkeypatch)
     run_migrations(postgres_engine)
+    initialize_ledger_state(postgres_engine)
     database_url = os.environ["POSTGRES_TEST_DATABASE_URL"]
 
     context = multiprocessing.get_context("spawn")

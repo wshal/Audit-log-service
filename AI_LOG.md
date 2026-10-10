@@ -365,3 +365,12 @@ This document records the traceability of AI assistance throughout the developme
 - **Changes**: The bounded process concurrency test now records each worker index and explicitly rejects any started worker whose exit status is nonzero or unavailable, even if it published a queue result. Existing timeout, exception, ledger-integrity, and lifecycle rollback assertions are preserved.
 - **Validation**: PostgreSQL test collection completed with **6 passed, 7 skipped** locally; the seven database-backed tests remain skipped because Docker/PostgreSQL is unavailable. The full suite completed with **132 passed, 7 skipped** and the existing Starlette/httpx deprecation warning. Compileall and `git diff --check` passed.
 - **Limitations**: Real PostgreSQL concurrency and transaction behavior remain unverified locally and require CI execution against PostgreSQL 16.
+
+### Entry 33: Diagnose PostgreSQL Gate 2 CI failures
+- **Date**: 2026-10-11
+- **Intent**: Correct the PostgreSQL-specific constraint reflection and concurrent-test readiness setup without weakening integrity or allocator behavior.
+- **Findings and changes**:
+  - PostgreSQL reflects the correctly named `tip_hash` check with dialect-specific casts/parentheses. Validation and the integration assertion now use stable constraint identity plus semantic function/column/length checks; invalid-DML enforcement remains covered.
+  - Spawned repository workers began with process-local readiness state `uninitialized`, causing `ensure_ready()` to return HTTP 503 before allocation. The test now runs explicit empty-ledger initialization in the parent and establishes the child readiness precondition before calling the repository directly.
+- **Validation**: PostgreSQL test collection completed with **6 passed, 7 skipped** locally; Docker/PostgreSQL is unavailable. SQLite migration/integrity tests passed **32**; full suite passed **132** with **7 skipped** and the existing Starlette/httpx deprecation warning. Compileall and `git diff --check` passed.
+- **Limitations**: Real PostgreSQL migration, constraint, and concurrency execution remains unverified locally and must be confirmed by CI against PostgreSQL 16.

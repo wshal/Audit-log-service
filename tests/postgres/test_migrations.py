@@ -1,4 +1,5 @@
 import pytest
+import re
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import IntegrityError
 
@@ -24,11 +25,19 @@ def test_postgres_fresh_migration_and_constraints(postgres_engine):
 
     state_columns = {column["name"]: column for column in inspector.get_columns("ledger_state")}
     assert {"singleton_id", "next_sequence", "tip_hash", "state_version"} == set(state_columns)
-    checks = " ".join((item.get("sqltext") or "") for item in inspector.get_check_constraints("ledger_state"))
-    assert "singleton_id = 1" in checks
-    assert "next_sequence >= 1" in checks
-    assert "length(tip_hash) = 64" in checks
-    assert "state_version >= 1" in checks
+    checks = inspector.get_check_constraints("ledger_state")
+    check_names = {item.get("name") for item in checks}
+    assert {
+        "ck_ledger_state_singleton",
+        "ck_ledger_state_next_sequence",
+        "ck_ledger_state_tip_hash_length",
+        "ck_ledger_state_version",
+    }.issubset(check_names)
+    tip_check = next(item for item in checks if item.get("name") == "ck_ledger_state_tip_hash_length")
+    reflected_tip_sql = re.sub(r"[\s\"'`()\[\]]", "", str(tip_check.get("sqltext") or "").lower())
+    assert "tip_hash" in reflected_tip_sql
+    assert "64" in reflected_tip_sql
+    assert any(function in reflected_tip_sql for function in ("length", "char_length", "octet_length"))
 
     with postgres_engine.connect() as connection:
         assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0001_schema_foundation"

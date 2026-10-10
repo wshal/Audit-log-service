@@ -3,6 +3,7 @@ Database models and connection engine for the append-only audit ledger.
 """
 
 import json
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 from sqlalchemy import (
@@ -149,6 +150,27 @@ def _validate_table_shape(inspector, table_name: str, required_columns: set[str]
         raise RuntimeError(f"Existing {table_name} schema is incompatible; {unique_column} must be unique")
 
 
+def _validate_ledger_state_checks(inspector, *, stamped: bool) -> None:
+    """Validate named ledger invariants across dialect-specific reflection text."""
+    prefix = "Stamped " if stamped else "Existing "
+    checks = [str(item.get("sqltext") or "").lower() for item in inspector.get_check_constraints("ledger_state")]
+    normalized = [re.sub(r"[\s\"'`()\[\]]", "", value) for value in checks]
+    requirements = (
+        ("singleton_id = 1", lambda value: "singleton_id=1" in value),
+        ("next_sequence >= 1", lambda value: "next_sequence" in value and ">=1" in value),
+        ("state_version >= 1", lambda value: "state_version" in value and ">=1" in value),
+        (
+            "length(tip_hash) = 64",
+            lambda value: "tip_hash" in value
+            and "64" in value
+            and any(function in value for function in ("length", "char_length", "octet_length")),
+        ),
+    )
+    for fragment, matches in requirements:
+        if not any(matches(value) for value in normalized):
+            raise RuntimeError(f"{prefix}ledger_state schema is incompatible; missing check {fragment}")
+
+
 def validate_pre_migration_schema(engine) -> None:
     """Reject unknown pre-Alembic schemas before migration state is created."""
     inspector = inspect(engine)
@@ -187,10 +209,7 @@ def validate_pre_migration_schema(engine) -> None:
         primary_key = inspector.get_pk_constraint("ledger_state").get("constrained_columns", [])
         if primary_key != ["singleton_id"]:
             raise RuntimeError("Existing ledger_state schema is incompatible; expected primary key singleton_id")
-        checks = " ".join((item.get("sqltext") or "") for item in inspector.get_check_constraints("ledger_state"))
-        for fragment in ("singleton_id = 1", "next_sequence >= 1", "state_version >= 1", "length(tip_hash) = 64"):
-            if fragment not in checks:
-                raise RuntimeError(f"Existing ledger_state schema is incompatible; missing check {fragment}")
+        _validate_ledger_state_checks(inspector, stamped=False)
 
 
 def validate_current_schema(engine, revision: str) -> None:
@@ -210,10 +229,7 @@ def validate_current_schema(engine, revision: str) -> None:
     _validate_column_specs(inspector, "audit_epoch_transitions", _TRANSITION_COLUMN_SPECS)
     _validate_table_shape(inspector, "audit_epoch_transitions", set(_TRANSITION_COLUMN_SPECS), unique_column="transition_hash")
     _validate_column_specs(inspector, "ledger_state", _LEDGER_STATE_COLUMN_SPECS)
-    checks = " ".join((item.get("sqltext") or "") for item in inspector.get_check_constraints("ledger_state"))
-    for fragment in ("singleton_id = 1", "next_sequence >= 1", "state_version >= 1", "length(tip_hash) = 64"):
-        if fragment not in checks:
-            raise RuntimeError(f"Stamped ledger_state schema is incompatible; missing check {fragment}")
+    _validate_ledger_state_checks(inspector, stamped=True)
 
 
 class AuditRecordEntity(Base):
