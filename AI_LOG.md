@@ -400,3 +400,26 @@ This document records the traceability of AI assistance throughout the developme
 - **CI run**: [GitHub Actions run 38088656823](https://github.com/wshal/Audit-log-service/actions/runs/38088656823)
 - **Reported result**: Passed. The PostgreSQL integration workflow completed successfully, including the database migration/constraint and independent-process concurrency coverage for Gate 2. This result was reported from the CI run by the repository operator; the run page was not independently fetchable from this environment.
 - **Local comparison**: The local environment still has no PostgreSQL service; PostgreSQL collection remains **6 passed, 7 skipped**, while the default suite remains **132 passed, 7 skipped**.
+
+### Entry 37: Bind verification to persisted ledger state
+- **Date**: 2026-10-11
+- **Intent**: Close a Gate 3 integrity gap where verification walked records and signatures but did not validate an existing allocator tip/sequence state.
+- **Changes**:
+  - `ChainVerificationService.verify_ledger()` now compares an existing `ledger_state` singleton with the verified record count and final record hash, returning a failed verification on mismatch.
+  - A missing state row remains tolerated during explicit legacy startup initialization; `initialize_ledger_state()` still derives and persists the state only after record verification.
+  - Added a regression test that tampers with `ledger_state.tip_hash` and asserts verification failure without changing the existing signature-specific failure ordering.
+- **Validation**: Full default suite **133 passed, 7 skipped**, with the existing Starlette/httpx warning; compileall and `git diff --check` passed. PostgreSQL CI behavior was not rerun for this Gate 3 change.
+- **Limitations**: Gate 3 still requires independent review of canonicalization, key rotation, nested redaction semantics, export proofs, and real PostgreSQL regression execution.
+
+### Entry 38: Constrain initialization verification and document canonical JSON compatibility
+- **Date**: 2026-10-11
+- **Intent**: Remediate the Gate 3 verification-boundary and unsupported RFC 8785 claim findings without rewriting historical hashes.
+- **Changes**:
+  - Added a private initialization-only verification token/path used exclusively by `initialize_ledger_state()` to validate populated history before deriving a missing singleton. Ordinary verification now fails closed when populated records have no persisted state; empty-ledger behavior remains unchanged.
+  - Reclassified `canonical_json()` as the project's historical Python `json.dumps`-based deterministic format, removed the RFC 8785 compatibility claim, and pinned representative numeric serialization outputs in compatibility tests. No serializer behavior or historical hashes changed.
+  - Updated migration and authorization tests to initialize state explicitly before ordinary full-ledger verification where that was the intended setup.
+- **Validation**: Focused verification/migration/integrity/canonicalization set **49 passed**; full suite **136 passed, 7 skipped**; compileall and `git diff --check` passed. PostgreSQL was not rerun locally.
+
+### Entry 39: Record initialization verifier trust boundary
+- **Date**: 2026-10-11
+- **Design assumption**: The initialization-only verifier path is a trusted internal Python boundary used by `initialize_ledger_state()`. It is not an isolated capability that is inaccessible to every direct Python caller; ordinary HTTP/API callers cannot invoke it. This remains a known assumption unless a later security review identifies a concrete bypass.

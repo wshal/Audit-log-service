@@ -228,6 +228,20 @@ def test_startup_state_initialization_derives_valid_populated_ledger(db_session)
     assert (state.next_sequence, state.tip_hash) == (2, first.record_hash)
 
 
+def test_ordinary_verification_rejects_populated_ledger_without_state(db_session):
+    AuditLedgerRepository(db_session).append_event(_event(1), _writer())
+    db_session.query(LedgerStateEntity).delete()
+    db_session.commit()
+
+    result = ChainVerificationService.verify_ledger(
+        db_session,
+        principal=Principal("auditor", frozenset({"global_auditor"}), "audit"),
+    )
+
+    assert result.intact is False
+    assert "state is missing" in result.details
+
+
 def test_startup_state_initialization_rejects_invalid_history(db_session):
     first = AuditLedgerRepository(db_session).append_event(_event(1), _writer())
     record = db_session.query(AuditRecordEntity).one()

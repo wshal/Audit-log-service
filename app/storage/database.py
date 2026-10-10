@@ -387,7 +387,7 @@ def initialize_ledger_state(engine) -> None:
         records = session.query(AuditRecordEntity).order_by(AuditRecordEntity.sequence_num.asc()).all()
         if records:
             with preflight_scope():
-                result = ChainVerificationService.verify_ledger(
+                result = ChainVerificationService._verify_for_initialization(
                     session,
                     principal=Principal("state-initializer", frozenset({"global_auditor"}), "state-initializer"),
                 )

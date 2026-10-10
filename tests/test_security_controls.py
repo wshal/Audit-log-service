@@ -10,7 +10,7 @@ from app.main import app
 from app.models.schemas import ViolationType
 from app.security import _credentials
 from app.security import authenticated_principal
-from app.storage.database import AuditRecordEntity
+from app.storage.database import AuditRecordEntity, LedgerStateEntity
 
 
 def _event():
@@ -124,6 +124,20 @@ def test_recomputed_forged_hash_is_rejected_by_signature(client, db_session):
     result = client.get("/audit/verify").json()
     assert result["intact"] is False
     assert result["violationType"] == ViolationType.SIGNATURE_MISMATCH.value
+
+
+def test_ledger_state_tip_tampering_is_rejected(client, db_session):
+    assert client.post("/audit/events", json=_event()).status_code == 201
+    state = db_session.query(LedgerStateEntity).filter_by(singleton_id=1).one()
+    state.tip_hash = "f" * 64
+    db_session.commit()
+
+    result = client.get("/audit/verify")
+
+    assert result.status_code == 200
+    assert result.json()["intact"] is False
+    assert result.json()["violationType"] == ViolationType.RECORD_HASH_MISMATCH.value
+    assert "ledger state" in result.json()["details"].lower()
 
 
 def test_archival_state_tampering_is_detected(client, db_session):

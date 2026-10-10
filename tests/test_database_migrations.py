@@ -15,6 +15,7 @@ from app.storage.database import (
     Base,
     LedgerStateEntity,
     init_db,
+    initialize_ledger_state,
 )
 
 
@@ -360,6 +361,7 @@ def test_populated_v1_v2_history_is_byte_preserved(tmp_path, monkeypatch):
         )).one())
     assert before_records == after_records
     assert before_transition == after_transition
+    initialize_ledger_state(engine)
     verification_session = sessionmaker(bind=engine)()
     try:
         verification = ChainVerificationService.verify_ledger(

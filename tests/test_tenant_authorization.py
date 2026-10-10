@@ -240,6 +240,8 @@ def test_direct_verification_and_full_ledger_reads_require_capability(db_session
     else:
         raise AssertionError("unscoped verification was allowed")
     auditor = Principal("auditor", frozenset({"global_auditor"}), "cred-global")
+    from app.storage.database import initialize_ledger_state
+    initialize_ledger_state(db_session.bind)
     assert ChainVerificationService.verify_ledger(db_session, principal=auditor).intact is True
 
 

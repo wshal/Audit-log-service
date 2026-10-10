@@ -21,19 +21,30 @@ from app.crypto.hasher import (
 )
 from app.crypto.signer import public_key_for_id, verify_record_signature
 from app.models.schemas import VerificationResult, ViolationType
-from app.storage.database import AuditRecordEntity
+from app.storage.database import AuditRecordEntity, LedgerStateEntity
 from app.storage.database import AuditEpochTransitionEntity
 from app.storage.repository import AuditLedgerRepository
 from app.runtime_state import ensure_ready
 
+_INITIALIZATION_VERIFICATION_TOKEN = object()
 
 class ChainVerificationService:
     @staticmethod
-    def verify_ledger(session: Session, principal=None) -> VerificationResult:
+    def _verify_for_initialization(session: Session, principal=None) -> VerificationResult:
+        """Trusted startup-only verification before deriving missing state."""
+        return ChainVerificationService.verify_ledger(
+            session,
+            principal=principal,
+            _initialization_token=_INITIALIZATION_VERIFICATION_TOKEN,
+        )
+
+    @staticmethod
+    def verify_ledger(session: Session, principal=None, *, _initialization_token=None) -> VerificationResult:
         ensure_ready()
         if principal is None or "global_auditor" not in getattr(principal, "roles", ()):
             from fastapi import HTTPException
             raise HTTPException(status_code=403, detail="Global auditor capability is required")
+        allow_missing_state = _initialization_token is _INITIALIZATION_VERIFICATION_TOKEN
         repo = AuditLedgerRepository(session)
         records: List[AuditRecordEntity] = repo.get_all_ordered_by_sequence(principal=principal)
 
@@ -56,6 +67,26 @@ class ChainVerificationService:
 
         total = len(records)
         if total == 0:
+            ledger_state = session.query(LedgerStateEntity).filter(
+                LedgerStateEntity.singleton_id == 1
+            ).one_or_none()
+            if ledger_state is None and not allow_missing_state:
+                return VerificationResult(
+                    intact=False,
+                    recordsVerified=0,
+                    violationType=ViolationType.RECORD_HASH_MISMATCH,
+                    details="Persisted ledger state is missing for a populated audit history.",
+                )
+            if ledger_state is not None and (
+                ledger_state.next_sequence != 1
+                or ledger_state.tip_hash != GENESIS_PREV_HASH
+            ):
+                return VerificationResult(
+                    intact=False,
+                    recordsVerified=0,
+                    violationType=ViolationType.RECORD_HASH_MISMATCH,
+                    details="Persisted ledger state does not match the verified audit history.",
+                )
             return VerificationResult(
                 intact=True,
                 recordsVerified=0,
@@ -245,6 +276,32 @@ class ChainVerificationService:
 
             # Update expected_prev_hash for next iteration
             expected_prev_hash = rec.record_hash
+
+        # The persisted singleton is part of the integrity boundary. Check it
+        # only after record verification so the most specific record failure
+        # (for example, a signature mismatch) is retained in the result.
+        ledger_state = session.query(LedgerStateEntity).filter(
+            LedgerStateEntity.singleton_id == 1
+        ).one_or_none()
+        expected_next = len(records) + 1
+        expected_tip = records[-1].record_hash
+        if ledger_state is None and not allow_missing_state:
+            return VerificationResult(
+                intact=False,
+                recordsVerified=total,
+                violationType=ViolationType.RECORD_HASH_MISMATCH,
+                details="Persisted ledger state is missing for a populated audit history.",
+            )
+        if ledger_state is not None and (
+            ledger_state.next_sequence != expected_next
+            or ledger_state.tip_hash != expected_tip
+        ):
+            return VerificationResult(
+                intact=False,
+                recordsVerified=total,
+                violationType=ViolationType.RECORD_HASH_MISMATCH,
+                details="Persisted ledger state does not match the verified audit history.",
+            )
 
         return VerificationResult(
             intact=True,
