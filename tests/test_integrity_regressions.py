@@ -8,6 +8,7 @@ from sqlalchemy.orm import sessionmaker
 from app.models.schemas import AuditEventCreate, ViolationType
 from app.storage.database import AuditRecordEntity, Base
 from app.storage.repository import AuditLedgerRepository
+from app.security import Principal
 
 
 def test_redacted_record_mutation_is_detected(client, db_session):
@@ -105,7 +106,7 @@ def test_sqlite_append_serializes_competing_writers(tmp_path):
             return AuditLedgerRepository(session).append_event(AuditEventCreate(
                 eventType="CONCURRENT_WRITE", actorId=str(index), resourceType="TEST",
                 resourceId=str(index), payload={}, timestamp="2026-10-07T00:00:00Z",
-            )).sequence_num
+            ), Principal("concurrency", frozenset({"writer"}), "concurrency", (), True)).sequence_num
         finally:
             session.close()
 

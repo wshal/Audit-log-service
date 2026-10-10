@@ -8,6 +8,15 @@ from fastapi import HTTPException, status
 
 from app.security import Principal
 
+_ACTION_ROLES = {
+    "read": "reader",
+    "write": "writer",
+    "export": "exporter",
+    "compliance": "compliance_reviewer",
+    "redact": "privacy_officer",
+    "retain": "retention_admin",
+}
+
 
 @lru_cache(maxsize=1)
 def resource_registry() -> dict[tuple[str, str], str]:
@@ -40,8 +49,27 @@ def deny(detail: str = "Not authorized for this resource") -> None:
 
 
 def authorize_legacy(principal: Principal, action: str) -> None:
-    if not principal.legacy_access:
+    if principal is None or not principal.legacy_access:
         deny("Legacy ledger access requires an explicit legacy grant")
+
+
+def require_operation_role(principal: Principal, action: str, *, include_pii: bool = False) -> None:
+    """Enforce the operation role at service/repository boundaries, not just routers."""
+    if principal is None:
+        deny("Authorization scope is required")
+    role = _ACTION_ROLES.get(action)
+    if role and role not in principal.roles:
+        deny("Insufficient role for this operation")
+    if include_pii and "pii_reader" not in principal.roles:
+        deny("PII export requires an explicit PII reader capability")
+
+
+def authorize_record(principal: Principal, action: str, record, *, include_pii: bool = False) -> None:
+    require_operation_role(principal, action, include_pii=include_pii)
+    if getattr(record, "tenant_id", None):
+        authorize(principal, action, record.tenant_id, record.resource_type, record.resource_id)
+    else:
+        authorize_legacy(principal, action)
 
 
 def grant_allows(principal: Principal, action: str, tenant_id: str, resource_type: str | None = None,

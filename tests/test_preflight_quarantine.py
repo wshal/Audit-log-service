@@ -46,11 +46,14 @@ def test_malformed_legacy_record_quarantines_and_blocks_audit_routes(isolated_te
         assert client.post("/audit/events", json={}).status_code == 503
 
 
-def test_valid_mixed_ledger_preflight_succeeds(isolated_test_application):
+def test_valid_mixed_ledger_preflight_succeeds(isolated_test_application, monkeypatch):
+    monkeypatch.setenv("AUDIT_RESOURCE_OWNERSHIP", '{"CLIENT_ACCOUNT:client-a":{"tenantId":"tenant-a"}}')
+    from app.authorization import clear_authorization_caches
+    clear_authorization_caches()
     session = isolated_test_application["session_factory"]()
     repo = AuditLedgerRepository(session)
     repo.append_event(AuditEventCreate(eventType="V1", actorId="actor", resourceType="CLIENT", resourceId="client", payload={}, timestamp="2026-01-01T00:00:00Z"), Principal("actor", frozenset({"writer"}), "v1", (), True))
-    repo.append_event(AuditEventCreate(eventType="V2", actorId="actor", resourceType="CLIENT_ACCOUNT", resourceId="client-a", payload={}, timestamp="2026-01-01T00:00:01Z", tenantId="tenant-a"), Principal("actor", frozenset({"writer"}), "v2"))
+    repo.append_event(AuditEventCreate(eventType="V2", actorId="actor", resourceType="CLIENT_ACCOUNT", resourceId="client-a", payload={}, timestamp="2026-01-01T00:00:01Z", tenantId="tenant-a"), Principal("actor", frozenset({"writer"}), "v2", ({"tenantId": "tenant-a", "actions": ["write"], "resourceScopes": [{"resourceType": "CLIENT_ACCOUNT", "resourceIds": ["client-a"]}]},)))
     session.close()
     with TestClient(main_module.app) as client:
         assert client.get("/health").json()["status"] == "healthy"
@@ -81,10 +84,13 @@ def test_broken_sequence_and_signature_quarantine(isolated_test_application):
     # failure already proves preflight rejects a structurally invalid V1 row.
 
 
-def test_missing_mixed_transition_quarantines(isolated_test_application):
+def test_missing_mixed_transition_quarantines(isolated_test_application, monkeypatch):
+    monkeypatch.setenv("AUDIT_RESOURCE_OWNERSHIP", '{"CLIENT_ACCOUNT:client-a":{"tenantId":"tenant-a"}}')
+    from app.authorization import clear_authorization_caches
+    clear_authorization_caches()
     session = isolated_test_application["session_factory"]()
     repo = AuditLedgerRepository(session)
-    repo.append_event(AuditEventCreate(eventType="V2", actorId="actor", resourceType="CLIENT_ACCOUNT", resourceId="client-a", payload={}, timestamp="2026-01-01T00:00:01Z", tenantId="tenant-a"), Principal("actor", frozenset({"writer"}), "v2"))
+    repo.append_event(AuditEventCreate(eventType="V2", actorId="actor", resourceType="CLIENT_ACCOUNT", resourceId="client-a", payload={}, timestamp="2026-01-01T00:00:01Z", tenantId="tenant-a"), Principal("actor", frozenset({"writer"}), "v2", ({"tenantId": "tenant-a", "actions": ["write"], "resourceScopes": [{"resourceType": "CLIENT_ACCOUNT", "resourceIds": ["client-a"]}]},)))
     session.execute(text("DELETE FROM audit_epoch_transitions")); session.commit(); session.close()
     with TestClient(main_module.app) as client:
         assert client.get("/ready").status_code == 503

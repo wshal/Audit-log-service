@@ -200,7 +200,7 @@ def test_v2_append_rolls_back_when_transition_signing_fails(db_session, monkeypa
     monkeypatch.setattr(repository_module, "sign_record_hash", lambda value: (_ for _ in ()).throw(RuntimeError("signing failure")))
     repo = AuditLedgerRepository(db_session)
     try:
-        repo.append_event(AuditEventCreate(**_event("client-a", "actor-a", "tenant-a")), Principal("actor-a", frozenset({"writer"}), "cred-a"))
+        repo.append_event(AuditEventCreate(**_event("client-a", "actor-a", "tenant-a")), Principal("actor-a", frozenset({"writer"}), "cred-a", ({"tenantId": "tenant-a", "actions": ["write"], "resourceScopes": [{"resourceType": "CLIENT_ACCOUNT", "resourceIds": ["client-a"]}]},)))
     except RuntimeError:
         pass
     assert db_session.query(AuditRecordEntity).count() == 0
@@ -272,9 +272,130 @@ def test_each_v2_integrity_field_tampering_fails(field, value, db_session, monke
     from app.services.verifier import ChainVerificationService
     event = AuditEventCreate(**_event("client-a", "actor-a", "tenant-a"))
     repo = AuditLedgerRepository(db_session)
-    repo.append_event(event, Principal("actor-a", frozenset({"writer"}), "cred-a", (), False))
+    repo.append_event(event, Principal("actor-a", frozenset({"writer"}), "cred-a", ({"tenantId": "tenant-a", "actions": ["write"], "resourceScopes": [{"resourceType": "CLIENT_ACCOUNT", "resourceIds": ["client-a"]}]},), False))
     record = db_session.query(AuditRecordEntity).filter(AuditRecordEntity.protocol_version == 2).first()
     setattr(record, field, value)
     db_session.commit()
     result = ChainVerificationService.verify_ledger(db_session, Principal("auditor", frozenset({"global_auditor"}), "cred-global"))
     assert result.intact is False
+
+
+def test_direct_lifecycle_and_compliance_boundaries_enforce_scope(db_session, monkeypatch):
+    _configure_principals(monkeypatch)
+    from app.models.schemas import AuditEventCreate
+    from app.security import Principal
+    from app.storage.repository import AuditLedgerRepository
+    from app.services.lifecycle import LifecycleAndExportService
+    from app.services.compliance import ComplianceService
+
+    owner = Principal("actor-a", frozenset({"writer", "reader", "exporter", "privacy_officer", "retention_admin", "compliance_reviewer"}), "cred-a", (
+        {"tenantId": "tenant-a", "actions": ["read", "write", "export", "redact", "retain", "compliance"], "resourceScopes": [{"resourceType": "CLIENT_ACCOUNT", "resourceIds": ["client-a"]}]},
+    ))
+    foreign = Principal("actor-b", frozenset({"reader", "exporter", "privacy_officer", "retention_admin", "compliance_reviewer"}), "cred-b", (
+        {"tenantId": "tenant-b", "actions": ["read", "export", "redact", "retain", "compliance"], "resourceScopes": [{"resourceType": "CLIENT_ACCOUNT", "resourceIds": ["client-b"]}]},
+    ))
+    record = AuditLedgerRepository(db_session).append_event(
+        AuditEventCreate(**_event("client-a", "actor-a", "tenant-a")), owner
+    )
+    with pytest.raises(Exception):
+        LifecycleAndExportService.generate_verifiable_export(db_session, resource_id="client-a", principal=foreign)
+    with pytest.raises(Exception):
+        LifecycleAndExportService.redact_record_fields(db_session, record.sequence_num, ["justification"], "no", principal=foreign)
+    with pytest.raises(Exception):
+        LifecycleAndExportService.apply_retention_policy(db_session, 1, "no", tenant_id="tenant-a", resource_id="client-a", principal=foreign)
+    with pytest.raises(Exception):
+        ComplianceService.generate_client_access_audit_report(db_session, "client-a", principal=foreign)
+
+
+def test_direct_pii_export_requires_explicit_pii_permission(db_session, monkeypatch):
+    _configure_principals(monkeypatch)
+    from app.models.schemas import AuditEventCreate
+    from app.security import Principal
+    from app.storage.repository import AuditLedgerRepository
+    from app.services.lifecycle import LifecycleAndExportService
+    owner = Principal("actor-a", frozenset({"writer", "exporter"}), "cred-a", (
+        {"tenantId": "tenant-a", "actions": ["write", "export"], "resourceScopes": [{"resourceType": "CLIENT_ACCOUNT", "resourceIds": ["client-a"]}]},
+    ))
+    AuditLedgerRepository(db_session).append_event(
+        AuditEventCreate(**dict(_event("client-a", "actor-a", "tenant-a"), payload={"ssn": "secret"})), owner
+    )
+    with pytest.raises(Exception):
+        LifecycleAndExportService.generate_verifiable_export(db_session, resource_id="client-a", include_pii=True, principal=owner)
+
+
+def test_repository_v1_append_requires_explicit_legacy_write(db_session, monkeypatch):
+    _configure_principals(monkeypatch)
+    from app.models.schemas import AuditEventCreate
+    from app.security import Principal
+    from app.storage.repository import AuditLedgerRepository
+    event = AuditEventCreate(eventType="LEGACY", actorId="actor", resourceType="CLIENT", resourceId="legacy", payload={}, timestamp="2026-01-01T00:00:00Z")
+    repo = AuditLedgerRepository(db_session)
+    with pytest.raises(Exception):
+        repo.append_event(event)
+    admin = Principal("admin", frozenset({"admin", "writer"}), "admin")
+    with pytest.raises(Exception):
+        repo.append_event(event, admin)
+    legacy_writer = Principal("legacy", frozenset({"writer"}), "legacy", (), True)
+    assert repo.append_event(event, legacy_writer).sequence_num == 1
+
+
+def test_query_requires_reader_role_even_with_tenant_grant(db_session, monkeypatch):
+    _configure_principals(monkeypatch)
+    from app.models.schemas import AuditEventCreate, QueryFilters
+    from app.security import Principal
+    from app.storage.repository import AuditLedgerRepository
+    owner = Principal("actor-a", frozenset({"writer"}), "cred-a", (
+        {"tenantId": "tenant-a", "actions": ["write", "read"], "resourceScopes": [{"resourceType": "CLIENT_ACCOUNT", "resourceIds": ["client-a"]}]},
+    ))
+    AuditLedgerRepository(db_session).append_event(AuditEventCreate(**_event("client-a", "actor-a", "tenant-a")), owner)
+    with pytest.raises(Exception):
+        AuditLedgerRepository(db_session).query_events(
+            QueryFilters(resourceType="CLIENT_ACCOUNT", resourceId="client-a"), principal=owner
+        )
+    reader = Principal("reader", frozenset({"reader"}), "reader", (
+        {"tenantId": "tenant-a", "actions": ["read"], "resourceScopes": [{"resourceType": "CLIENT_ACCOUNT", "resourceIds": ["client-a"]}]},
+    ))
+    rows, total = AuditLedgerRepository(db_session).query_events(
+        QueryFilters(resourceType="CLIENT_ACCOUNT", resourceId="client-a"), principal=reader
+    )
+    assert total == 1 and len(rows) == 1
+
+
+def test_legacy_access_without_reader_role_cannot_query_v1(db_session, monkeypatch):
+    _configure_principals(monkeypatch)
+    from app.models.schemas import AuditEventCreate, QueryFilters
+    from app.security import Principal
+    from app.storage.repository import AuditLedgerRepository
+    repo = AuditLedgerRepository(db_session)
+    repo.append_event(AuditEventCreate(eventType="LEGACY", actorId="actor", resourceType="CLIENT", resourceId="legacy", payload={}, timestamp="2026-01-01T00:00:00Z"), Principal("writer", frozenset({"writer"}), "writer", (), True))
+    with pytest.raises(Exception):
+        repo.query_events(QueryFilters(resourceId="legacy"), principal=Principal("legacy", frozenset(), "legacy", (), True))
+
+
+def test_redaction_denial_is_indistinguishable_and_preserves_rows_and_manifests(db_session, monkeypatch):
+    _configure_principals(monkeypatch)
+    from app.models.schemas import AuditEventCreate
+    from app.security import Principal
+    from app.storage.database import AuditRecordEntity
+    from app.storage.repository import AuditLedgerRepository
+    from app.services.lifecycle import LifecycleAndExportService
+    owner = Principal("actor-a", frozenset({"writer", "privacy_officer"}), "cred-a", (
+        {"tenantId": "tenant-a", "actions": ["write", "redact"], "resourceScopes": [{"resourceType": "CLIENT_ACCOUNT", "resourceIds": ["client-a"]}]},
+    ))
+    foreign = Principal("actor-b", frozenset({"privacy_officer"}), "cred-b", (
+        {"tenantId": "tenant-b", "actions": ["redact"], "resourceScopes": [{"resourceType": "CLIENT_ACCOUNT", "resourceIds": ["client-b"]}]},
+    ))
+    record = AuditLedgerRepository(db_session).append_event(
+        AuditEventCreate(**dict(_event("client-a", "actor-a", "tenant-a"), payload={"ssn": "secret"})), owner
+    )
+    before = [(r.sequence_num, r.payload_json, r.redaction_metadata_json, r.event_type) for r in db_session.query(AuditRecordEntity).all()]
+    errors = []
+    for sequence in (record.sequence_num, 9999):
+        try:
+            LifecycleAndExportService.redact_record_fields(db_session, sequence, ["ssn"], "denied", principal=foreign)
+        except Exception as exc:
+            errors.append((type(exc), str(exc)))
+    after = [(r.sequence_num, r.payload_json, r.redaction_metadata_json, r.event_type) for r in db_session.query(AuditRecordEntity).all()]
+    assert errors == [(ValueError, "Audit record not found"), (ValueError, "Audit record not found")]
+    assert after == before
+    assert LifecycleAndExportService.redact_record_fields(db_session, record.sequence_num, ["ssn"], "approved", principal=owner).sequenceNum == record.sequence_num

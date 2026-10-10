@@ -133,3 +133,27 @@ This document records the traceability of AI assistance throughout the developme
   - Added direct-entry, recovery-consumption, and restart regression coverage; preflight does not mutate historical rows.
 - **Validation**: Latest recorded run: `.venv\Scripts\python.exe -m pytest -q` => **55 passed**; `python -m compileall -q app tests` and `git diff --check` completed successfully.
 - **Limitations**: Marker durability is bounded by the configured local filesystem; directory fsync is best-effort where unsupported. Valid signed tail truncation still requires an independent checkpoint.
+
+### Entry 12: Service-Boundary Authorization Remediation
+- **Date**: 2026-10-10
+- **Intent**: Close independently identified direct-call authorization bypasses without changing the V1/V2 integrity protocol or quarantine model.
+- **Review finding**: Lifecycle retention/redaction/export, compliance reporting, and repository V1 append previously relied too heavily on router checks or only required a non-null principal.
+- **Engineer Decision**: **Implemented with failing direct-call tests first.**
+  - Added operation-role checks and tenant/resource ownership checks at service boundaries.
+  - Required explicit PII-reader capability for raw-PII exports and compliance reports.
+  - Required explicit writer role plus legacy capability for repository V1 appends; an admin role alone remains insufficient.
+  - Scoped legacy exports/reports to V1 rows and tenant exports/reports to the authorized tenant/resource predicate.
+  - Preserved readiness/quarantine enforcement and existing V1/V2 hashing and transition behavior.
+- **Validation**: `pytest tests/test_tenant_authorization.py -q` => **22 passed**; migration plus authorization tests => **23 passed**; full suite => **58 passed**; compileall and `git diff --check` exited successfully.
+- **Review state**: Changes are intentionally uncommitted pending independent review, as requested.
+
+### Entry 13: Close the final two authorization-boundary findings
+- **Date**: 2026-10-10
+- **Intent**: Remove record-existence disclosure during redaction and enforce the reader role in direct repository queries.
+- **Engineer Decision**: **Implemented with failing tests first.**
+  - Redaction now builds a tenant/resource/legacy scope predicate before loading the target sequence and normalizes unauthorized and nonexistent targets to the same not-found result.
+  - The redaction router delegates lookup and authorization to the service boundary, preventing an HTTP-layer existence distinction.
+  - Repository queries now require the `reader` role in addition to tenant grants or legacy access.
+  - Added regression coverage for wrong-scope existing/nonexistent redaction targets, unchanged rows/manifests, authorized redaction, tenant grants without reader role, and legacy access without reader role.
+- **Validation**: Tenant tests **25 passed**; migration plus tenant tests **26 passed**; full suite **61 passed**; compileall and `git diff --check` exited successfully.
+- **Review state**: Changes remain uncommitted and unpushed pending independent review.
