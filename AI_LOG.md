@@ -11,7 +11,7 @@ This document records the traceability of AI assistance throughout the developme
 
 ## Log Entries
 
-### Prompt 01 — Understand the requirements and shape the initial system
+### Entry 1: Project Scaffolding & Architecture Formulation
 - **Date**: 2026-10-07
 - **Intent**: Define technical stack, system architecture, data model, and decomposition plan.
 - **Prompt Summary**: "Analyze the Charles Schwab Audit Log Service requirements across Scenarios A, B, and C. Propose architecture, directory structure, and technical stack."
@@ -21,7 +21,7 @@ This document records the traceability of AI assistance throughout the developme
   - Required explicit genesis block hash specification (`GENESIS_BLOCK_PREV_HASH = "0" * 64`).
   - Added dedicated redaction mechanism using HMAC / Merkle-leaf or salted field hashes so redacting a sensitive value retains mathematical proof of original integrity.
 
-### Prompt 02 — Build the append-only ledger and prove tamper detection
+### Entry 2: Scenario A — Core Append-Only Ledger & Tamper Verification
 - **Date**: 2026-10-07
 - **Intent**: Implement Write API, Query API with multi-field filtering, and Chain Verification with tamper detection.
 - **AI Proposal**: Implement fast sequence lookup and SHA-256 chain calculation over RFC 8785 canonical JSON. Provide `GET /audit/verify` that returns detailed violation classification.
@@ -31,7 +31,7 @@ This document records the traceability of AI assistance throughout the developme
   - Upgraded Pydantic models to v2 `model_config` standard.
   - All tests passed (4/4).
 
-### Prompt 03 — Extend the ledger for retention, privacy, and export
+### Entry 3: Scenario B — Retention, Structured Redaction & Verifiable Export
 - **Date**: 2026-10-07
 - **Intent**: Implement retention policy, structured cryptographic redaction of sensitive PII, and verifiable bulk export bundles.
 - **AI Proposal**: Use salt-based cryptographic commitments for redacted fields so plaintext values are scrubbed while retaining mathematical proof and unbroken block hashes. Export bundles with bundle-level SHA-256 integrity digest.
@@ -41,7 +41,7 @@ This document records the traceability of AI assistance throughout the developme
   - Tested that independent third parties can verify exported bundles using only the metadata provided.
   - All Scenario B tests passed (3/3).
 
-### Prompt 04 — Normalize the compliance requirement before implementing it
+### Entry 4: Scenario C — Regulatory Compliance Reporting & Ambiguity Normalization
 - **Date**: 2026-10-07
 - **Intent**: Resolve ambiguous requirement ("Regulators need to be able to audit access to client account data") through formal requirement normalization, technical design, compliance report generation endpoint, and anomaly detection.
 - **AI Proposal**: Implement automated compliance aggregation endpoint `GET /audit/compliance/client-access` with actor summary breakdown, missing justification flags, and continuous chain integrity verification. Documented ambiguities, assumptions, and scope boundary in `docs/scenario_c_normalization.md`.
@@ -50,7 +50,7 @@ This document records the traceability of AI assistance throughout the developme
   - Implemented regulatory anomaly detection flagging uncertified accesses or high-frequency anomalies.
   - Executed complete test suite across all scenarios: 8/8 tests passed.
 
-### Prompt 05 — Review the first implementation and close integrity gaps
+### Entry 5: Post-Implementation Integrity Review and Hardening
 - **Date**: 2026-10-08
 - **Intent**: Review requirements and implementation boundaries, then add regression coverage for discovered failure modes.
 - **AI Proposal**: Flagged that redacted records bypassed content verification and that concurrent SQLite writers could calculate the same sequence number. Proposed a chained redaction manifest, serialized SQLite writes, UTC timestamp normalization, and adversarial tests.
@@ -61,7 +61,7 @@ This document records the traceability of AI assistance throughout the developme
   - Documented the remaining production requirements: authorization, key-managed cryptographic erasure, external signed checkpoints, and independently verifiable export inclusion proofs.
   - Validation: `\.venv\Scripts\python.exe -m pytest -q` => 12 passed.
 
-### Prompt 06 — Add authentication, signatures, and lifecycle evidence
+### Entry 6: Security Boundary and Lifecycle Integrity Hardening
 - **Date**: 2026-10-08
 - **Intent**: Address the root causes identified in the review: unauthenticated control-plane operations, hash-chain rewrites by a database-only attacker, mutable archival state, and exports lacking lifecycle evidence.
 - **AI Proposal**: Add API-key RBAC, Ed25519 signatures held outside the ledger, a rotation-safe public-key ring, signed lifecycle manifests for redaction and archival, and export witnesses.
@@ -73,7 +73,7 @@ This document records the traceability of AI assistance throughout the developme
   - Added API-key, role, signature-forgery, offline-export, redaction-witness, and archival-tampering regression tests.
   - Validation: `\.venv\Scripts\python.exe -m pytest -q` => 18 passed.
 
-### Prompt 07 — Re-test the security changes and prepare the live demonstration
+### Entry 7: Independent Regression Review and Demonstration Validation
 - **Date**: 2026-10-08
 - **Intent**: Re-review the hardened code for defects introduced by security changes, verify all scenarios together, and provide a reproducible manual defense flow.
 - **AI Proposal**: Test actor identity binding, key persistence across local restart, lifecycle/export evidence, compliance classification, and timestamp consistency.
@@ -85,7 +85,7 @@ This document records the traceability of AI assistance throughout the developme
   - Added a full Scenario A/B/C/security workflow test and copy/paste manual-validation guide.
   - Validation: `\.venv\Scripts\python.exe -m pytest -q` => 22 passed; compilation and dependency checks passed.
 
-### Prompt 08 — Design and implement tenant isolation without rewriting history
+### Entry 8: Tenant Isolation and Object Authorization
 - **Date**: 2026-10-10
 - **Intent**: Close the independent-review findings for tenant isolation, object authorization, PII exposure, lifecycle scope, V2 attribution integrity, migration safety, and V1/V2 transition evidence.
 - **Prompt Summary**: "Implement the approved Phase 1B remediation on `security/tenant-authorization-p0`; write regression tests before fixes, preserve V1 hashes, enforce repository/service scope, and validate the full suite."
@@ -100,7 +100,7 @@ This document records the traceability of AI assistance throughout the developme
   - Validation: `\.venv\Scripts\python.exe -m pytest -q` => **33 passed**; `python -m compileall -q app tests` and `git diff --check` completed successfully.
 - **Remaining limitations**: V1 and V2 still share the physical table/global sequence; valid signed tail truncation requires an independent checkpoint; nested PII classification and startup quarantine for inconsistent legacy data remain future work.
 
-### Prompt 09 — Close remaining authorization and PII review findings
+### Entry 9: Authorization, Integrity, and PII Review Follow-up
 - **Date**: 2026-10-10
 - **Intent**: Close the residual administrator V1-write bypass, protect direct full-ledger verification/repository access, and strengthen attribution/PII regression coverage.
 - **Engineer Decision**: **Implemented Steps 1–3; Step 4 paused for policy approval**.
@@ -111,7 +111,7 @@ This document records the traceability of AI assistance throughout the developme
   - Validation so far: focused tenant tests **19 passed**; migration plus tenant tests **20 passed**; full suite **42 passed**.
 - **Pending decision**: Startup behavior for inconsistent V1 data is not yet implemented. Proposed policy is fail-closed read-only quarantine with unhealthy status, no automatic repair, and operator recovery from a preserved/trusted database copy.
 
-### Prompt 10 — Validate legacy integrity before the service accepts traffic
+### Entry 10: Legacy Integrity Preflight and Quarantine
 - **Date**: 2026-10-10
 - **Intent**: Enforce the approved startup integrity boundary before serving audit traffic.
 - **Engineer Decision**: **Implemented fail-closed quarantine**.
@@ -122,7 +122,7 @@ This document records the traceability of AI assistance throughout the developme
   - Validation: preflight tests **7 passed**; focused authorization tests **19 passed**; migration plus authorization tests **20 passed**; final full suite **49 passed**; compileall and `git diff --check` completed successfully.
 - **Limitations**: The preflight uses the existing shared-table/global-sequence verifier and cannot detect validly signed tail truncation without an independently retained checkpoint.
 
-### Prompt 11 — Prevent quarantine bypasses and repeatable recovery approval
+### Entry 11: Quarantine and Recovery Hardening
 - **Date**: 2026-10-10
 - **Intent**: Close independent-review findings below the HTTP layer and remove repeatable recovery authorization.
 - **Engineer Decision**: **Implemented and tested.**
