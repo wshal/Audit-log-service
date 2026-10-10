@@ -36,6 +36,12 @@ def compute_event_content_hash(
     resource_id: str,
     payload: Dict[str, Any],
     timestamp: str,
+    tenant_id: str | None = None,
+    authenticated_subject: str | None = None,
+    credential_id: str | None = None,
+    attribution_mode: str | None = None,
+    delegation_reason: str | None = None,
+    protocol_version: int | None = None,
 ) -> str:
     """
     Calculates deterministic hash of the business event fields:
@@ -56,6 +62,16 @@ def compute_event_content_hash(
         "resourceType": resource_type,
         "timestamp": timestamp,
     }
+    if tenant_id is not None:
+        content_dict["tenantId"] = tenant_id
+    if protocol_version is not None and protocol_version >= 2:
+        content_dict.update({
+            "authenticatedSubject": authenticated_subject,
+            "credentialId": credential_id,
+            "attributionMode": attribution_mode,
+            "delegationReason": delegation_reason,
+            "protocolVersion": protocol_version,
+        })
     return compute_sha256(canonical_json(content_dict))
 
 

@@ -5,7 +5,7 @@ This document records the traceability of AI assistance throughout the developme
 ## Principles & Quality Gates
 - **Human-in-the-Loop**: All architectural boundaries, cryptographic choices, redaction designs, and test suites are directed, reviewed, and signed off by the engineer.
 - **Traceability**: Decisions to accept, modify, or reject AI proposals are documented here.
-- **Verification**: All code passes automated unit and integration tests, static typing checks, and manual tamper-detection validation.
+- **Verification**: Claims in this log are tied to recorded automated test, compilation, diff-check, or manual-validation evidence. Static type checking is not configured and is not claimed as a completed quality gate.
 
 ---
 
@@ -84,3 +84,52 @@ This document records the traceability of AI assistance throughout the developme
   - Normalized server-generated and lifecycle timestamps to UTC `Z`; reject duplicate/invalid redaction paths.
   - Added a full Scenario A/B/C/security workflow test and copy/paste manual-validation guide.
   - Validation: `\.venv\Scripts\python.exe -m pytest -q` => 22 passed; compilation and dependency checks passed.
+
+### Entry 8: Tenant Isolation and Object Authorization
+- **Date**: 2026-10-10
+- **Intent**: Close the independent-review findings for tenant isolation, object authorization, PII exposure, lifecycle scope, V2 attribution integrity, migration safety, and V1/V2 transition evidence.
+- **Prompt Summary**: "Implement the approved Phase 1B remediation on `security/tenant-authorization-p0`; write regression tests before fixes, preserve V1 hashes, enforce repository/service scope, and validate the full suite."
+- **AI Proposal**: Add explicit legacy access, default-deny tenant/resource grants, service-level authorization contexts, PII projections, tenant-scoped lifecycle operations, a versioned V2 hash envelope, signed transition metadata, atomic first-V2 persistence, and migration tests.
+- **Engineer Decision**: **Accepted with explicit limitations**.
+  - Removed implicit `admin` authorization and added explicit legacy/global capability checks.
+  - Added ordinary-principal two-tenant tests for cross-tenant reads, ungranted resources, actor spoofing, proxy attribution, verification privilege, lifecycle denial, PII projection, direct repository calls, V2 attribution tampering, transition tampering, and signing-failure rollback.
+  - Added tenant/resource predicates to repository and lifecycle/service entry points; authorized redaction, export, compliance, and retention are now tested positively.
+  - Bound V2 hashes to tenant ownership, authenticated subject, credential ID, attribution mode, delegation reason, and protocol version.
+  - Added additive/idempotent migration coverage for existing V1 schemas; historical V1 fields and hashes are not rewritten or assigned tenants.
+  - Added `docs/phase1b_v2_protocol.md` documenting the same-table/global-sequence trade-off and the remaining checkpoint limitation.
+  - Validation: `\.venv\Scripts\python.exe -m pytest -q` => **33 passed**; `python -m compileall -q app tests` and `git diff --check` completed successfully.
+- **Remaining limitations**: V1 and V2 still share the physical table/global sequence; valid signed tail truncation requires an independent checkpoint; nested PII classification and startup quarantine for inconsistent legacy data remain future work.
+
+### Entry 9: Authorization, Integrity, and PII Review Follow-up
+- **Date**: 2026-10-10
+- **Intent**: Close the residual administrator V1-write bypass, protect direct full-ledger verification/repository access, and strengthen attribution/PII regression coverage.
+- **Engineer Decision**: **Implemented Steps 1–3; Step 4 paused for policy approval**.
+  - V1 append now requires explicit `legacyAccess`; administrator role alone is insufficient.
+  - Direct repository full-ledger reads and verifier calls require an explicit `global_auditor` principal; compliance uses an internal verification capability rather than exposing global access to tenant callers.
+  - Added positive/negative legacy-write tests, direct repository/verifier tests, parameterized V2 tampering tests for all integrity-bound fields, and recursive nested object/array PII projection tests.
+  - Updated the existing writer fixture to declare explicit legacy access; no security assertion was weakened.
+  - Validation so far: focused tenant tests **19 passed**; migration plus tenant tests **20 passed**; full suite **42 passed**.
+- **Pending decision**: Startup behavior for inconsistent V1 data is not yet implemented. Proposed policy is fail-closed read-only quarantine with unhealthy status, no automatic repair, and operator recovery from a preserved/trusted database copy.
+
+### Entry 10: Legacy Integrity Preflight and Quarantine
+- **Date**: 2026-10-10
+- **Intent**: Enforce the approved startup integrity boundary before serving audit traffic.
+- **Engineer Decision**: **Implemented fail-closed quarantine**.
+  - Added lifecycle states `uninitialized`, `validating`, `healthy`, and `quarantined`.
+  - Schema migration completes before a read-only verifier preflight. Corrupt, malformed, invalid-transition, infrastructure, and indeterminate outcomes create a quarantine marker and block `/audit/*` routes and readiness with `503`.
+  - `/health` exposes only minimal status; liveness remains available for diagnostics. Restart does not clear quarantine; recovery requires operator-approved recovery after database repair/restoration.
+  - Added tests for fresh, malformed, broken-sequence, invalid-signature, valid mixed V1/V2, missing transition, quarantine persistence, and explicit recovery.
+  - Validation: preflight tests **7 passed**; focused authorization tests **19 passed**; migration plus authorization tests **20 passed**; final full suite **49 passed**; compileall and `git diff --check` completed successfully.
+- **Limitations**: The preflight uses the existing shared-table/global-sequence verifier and cannot detect validly signed tail truncation without an independently retained checkpoint.
+
+### Entry 11: Quarantine and Recovery Hardening
+- **Date**: 2026-10-10
+- **Intent**: Close independent-review findings below the HTTP layer and remove repeatable recovery authorization.
+- **Engineer Decision**: **Implemented and tested.**
+  - Added shared readiness enforcement to repository, verifier, lifecycle, and compliance entry points; only the scoped startup preflight context can run while validating.
+  - Replaced direct marker writes with same-directory temp-file flush/fsync/atomic-replace persistence and best-effort directory fsync.
+  - Marker, session, verifier, and persistence failures remain quarantined and unready.
+  - Replaced persistent recovery approval with a one-time `AUDIT_QUARANTINE_RECOVERY_TOKEN`; its hash and outcome are persisted and the marker is removed only after successful validation.
+  - Added direct-entry, recovery-consumption, and restart regression coverage; preflight does not mutate historical rows.
+- **Validation**: Latest recorded run: `.venv\Scripts\python.exe -m pytest -q` => **55 passed**; `python -m compileall -q app tests` and `git diff --check` completed successfully.
+- **Limitations**: Marker durability is bounded by the configured local filesystem; directory fsync is best-effort where unsupported. Valid signed tail truncation still requires an independent checkpoint.
