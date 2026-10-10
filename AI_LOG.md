@@ -384,3 +384,13 @@ This document records the traceability of AI assistance throughout the developme
   - Cross-dialect ledger check validation and reflected `tip_hash` assertions remain semantic/name-based while invalid-DML enforcement is retained.
 - **Validation**: SQLite migration/integrity tests passed **32**; full suite passed **132** with **7 skipped** and the existing Starlette/httpx warning. Compileall and `git diff --check` passed. Real PostgreSQL execution remains pending CI.
 - **Limitations**: The supplied CI excerpt showed cleanup SIGTERM (`-15`) rather than an underlying worker traceback; the lock-ordering fix is based on the current allocator path and must be confirmed by the real PostgreSQL job.
+
+### Entry 35: Preserve PostgreSQL worker failures and bound successful cleanup
+- **Date**: 2026-10-11
+- **Intent**: Correct the concurrency-test harness after CI reported only synthetic `-15` cleanup exits.
+- **Changes**:
+  - Worker failures now include the child traceback, rather than only an exception representation.
+  - Successful queue results are followed by bounded natural process joins; workers are no longer terminated merely because they are finishing cleanup after publishing a result.
+  - On an actual worker/timeout failure, bounded termination and kill cleanup run without replacing the original failure with cleanup exit codes.
+- **Validation**: PostgreSQL collection locally: **6 passed, 7 skipped**; full suite: **132 passed, 7 skipped**; compileall and `git diff --check` passed. No PostgreSQL server was available locally.
+- **Limitations**: The real CI database run is still required to determine whether any underlying PostgreSQL allocator error remains after the harness correction.

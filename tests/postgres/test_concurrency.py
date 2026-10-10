@@ -2,6 +2,7 @@ import base64
 import multiprocessing
 import os
 import time
+import traceback
 from queue import Empty
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -56,7 +57,7 @@ def _append_process_entry(database_url: str, index: int, result_queue) -> None:
     try:
         result_queue.put(("ok", index, _append_in_process(database_url, index)))
     except BaseException as exc:
-        result_queue.put(("error", index, repr(exc)))
+        result_queue.put(("error", index, traceback.format_exc()))
 
 
 def _snapshot_ledger(session):
@@ -119,6 +120,7 @@ def test_postgres_independent_processes_serialize_append_and_preserve_chain(post
     deadline = time.monotonic() + 30
     results = {}
     started = []
+    failure = None
     try:
         for index, process in enumerate(processes):
             process.start()
@@ -140,21 +142,39 @@ def test_postgres_independent_processes_serialize_append_and_preserve_chain(post
             exit_codes = [process.exitcode for process in processes]
             raise RuntimeError(f"PostgreSQL append workers exited without results: {exit_codes}")
         sequence_numbers = [results[index] for index in range(len(processes))]
+    except BaseException as exc:
+        # Preserve the first worker/timeout failure. Cleanup must not replace
+        # its useful traceback with synthetic SIGTERM exit codes.
+        failure = (exc, exc.__traceback__)
     finally:
-        for _, process in started:
-            if process.is_alive():
-                process.terminate()
+        # A queue result is published before the worker exits. On the success
+        # path, give every worker a bounded opportunity to finish naturally;
+        # terminating immediately would manufacture -15 failures. If the
+        # operation already failed, terminate remaining workers so cleanup is
+        # still bounded and cannot hold up the test.
         cleanup_deadline = time.monotonic() + 5
         for _, process in started:
             remaining = cleanup_deadline - time.monotonic()
             if remaining > 0:
                 process.join(timeout=remaining)
+        if failure is not None:
+            for _, process in started:
+                if process.is_alive():
+                    process.terminate()
+            terminate_deadline = time.monotonic() + 5
+            for _, process in started:
+                remaining = terminate_deadline - time.monotonic()
+                if remaining > 0 and process.is_alive():
+                    process.join(timeout=remaining)
         for _, process in started:
             if process.is_alive():
                 process.kill()
                 process.join(timeout=1)
         result_queue.cancel_join_thread()
         result_queue.close()
+
+    if failure is not None:
+        raise failure[0].with_traceback(failure[1])
 
     abnormal = [(index, process.exitcode) for index, process in started if process.exitcode != 0]
     if abnormal:
