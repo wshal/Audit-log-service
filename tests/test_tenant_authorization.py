@@ -528,9 +528,11 @@ def test_redaction_denial_is_indistinguishable_and_preserves_rows_and_manifests(
     record = AuditLedgerRepository(db_session).append_event(
         AuditEventCreate(**dict(_event("client-a", "actor-a", "tenant-a"), payload={"ssn": "secret"})), owner
     )
+    record_sequence = record.sequence_num
     before = [(r.sequence_num, r.payload_json, r.redaction_metadata_json, r.event_type) for r in db_session.query(AuditRecordEntity).all()]
+    db_session.rollback()
     errors = []
-    for sequence in (record.sequence_num, 9999):
+    for sequence in (record_sequence, 9999):
         try:
             LifecycleAndExportService.redact_record_fields(db_session, sequence, ["ssn"], "denied", principal=foreign)
         except Exception as exc:
@@ -538,7 +540,8 @@ def test_redaction_denial_is_indistinguishable_and_preserves_rows_and_manifests(
     after = [(r.sequence_num, r.payload_json, r.redaction_metadata_json, r.event_type) for r in db_session.query(AuditRecordEntity).all()]
     assert errors == [(ValueError, "Audit record not found"), (ValueError, "Audit record not found")]
     assert after == before
-    assert LifecycleAndExportService.redact_record_fields(db_session, record.sequence_num, ["ssn"], "approved", principal=owner).sequenceNum == record.sequence_num
+    db_session.rollback()
+    assert LifecycleAndExportService.redact_record_fields(db_session, record_sequence, ["ssn"], "approved", principal=owner).sequenceNum == record_sequence
 
 
 def test_direct_denials_preserve_retention_and_export_state(db_session, monkeypatch):
@@ -593,8 +596,11 @@ def test_export_lifecycle_manifests_are_database_scoped_by_tenant(db_session, mo
     repo = AuditLedgerRepository(db_session)
     record_a = repo.append_event(AuditEventCreate(**_event("client-a", "actor-a", "tenant-a")), owner_a)
     record_b = repo.append_event(AuditEventCreate(**_event("client-b", "actor-b", "tenant-b")), owner_b)
-    LifecycleAndExportService.redact_record_fields(db_session, record_a.sequence_num, ["justification"], "a", owner_a)
-    LifecycleAndExportService.redact_record_fields(db_session, record_b.sequence_num, ["justification"], "b", owner_b)
+    record_a_sequence = record_a.sequence_num
+    record_b_sequence = record_b.sequence_num
+    db_session.rollback()
+    LifecycleAndExportService.redact_record_fields(db_session, record_a_sequence, ["justification"], "a", owner_a)
+    LifecycleAndExportService.redact_record_fields(db_session, record_b_sequence, ["justification"], "b", owner_b)
 
     bundle = LifecycleAndExportService.generate_verifiable_export(
         db_session, resource_id="client-a", principal=owner_a
@@ -602,6 +608,152 @@ def test_export_lifecycle_manifests_are_database_scoped_by_tenant(db_session, mo
     assert bundle.totalRecords == 1
     assert {m["tenantId"] for m in bundle.integrityManifests} == {"tenant-a"}
     assert all(m["payload"].get("redactedSequenceNum") == record_a.sequence_num for m in bundle.integrityManifests)
+
+
+def test_redaction_failure_rolls_back_and_clears_allocator_ownership(db_session, monkeypatch):
+    _configure_principals(monkeypatch)
+    from app.models.schemas import AuditEventCreate
+    from app.security import Principal
+    from app.storage.database import AuditRecordEntity, LedgerStateEntity
+    from app.storage.repository import AuditLedgerRepository
+    from app.services.lifecycle import LifecycleAndExportService
+
+    owner = Principal("actor-a", frozenset({"writer", "privacy_officer"}), "cred-a", (
+        {"tenantId": "tenant-a", "actions": ["write", "redact"],
+         "resourceScopes": [{"resourceType": "CLIENT_ACCOUNT", "resourceIds": ["client-a"]}]},
+    ))
+    record = AuditLedgerRepository(db_session).append_event(
+        AuditEventCreate(**dict(_event("client-a", "actor-a", "tenant-a"), payload={"justification": "before"})), owner
+    )
+    record_sequence = record.sequence_num
+    db_session.rollback()
+    before = db_session.query(AuditRecordEntity).one().payload_json
+    state_before = db_session.query(LedgerStateEntity).one()
+    state_snapshot = (state_before.next_sequence, state_before.tip_hash)
+    db_session.rollback()
+
+    original_journal = LifecycleAndExportService._append_lifecycle_journal
+
+    def fail_journal(*args, **kwargs):
+        raise RuntimeError("journal signing failure")
+
+    monkeypatch.setattr(LifecycleAndExportService, "_append_lifecycle_journal", fail_journal)
+    with pytest.raises(RuntimeError, match="journal signing failure"):
+        LifecycleAndExportService.redact_record_fields(db_session, record_sequence, ["justification"], "test", owner)
+    assert not db_session.info.get("ledger_lock_acquired")
+    assert not db_session.in_transaction()
+    assert db_session.query(AuditRecordEntity).one().payload_json == before
+    state_after = db_session.query(LedgerStateEntity).one()
+    assert (state_after.next_sequence, state_after.tip_hash) == state_snapshot
+    db_session.rollback()
+
+    monkeypatch.setattr(LifecycleAndExportService, "_append_lifecycle_journal", staticmethod(original_journal))
+    result = LifecycleAndExportService.redact_record_fields(
+        db_session, record_sequence, ["justification"], "retry", owner
+    )
+    assert result.sequenceNum == record_sequence
+
+
+def test_retention_failure_rolls_back_archive_and_allocator_state(db_session, monkeypatch):
+    _configure_principals(monkeypatch)
+    from app.models.schemas import AuditEventCreate
+    from app.security import Principal
+    from app.storage.database import AuditRecordEntity, LedgerStateEntity
+    from app.storage.repository import AuditLedgerRepository
+    from app.services.lifecycle import LifecycleAndExportService
+
+    owner = Principal("actor-a", frozenset({"writer", "retention_admin"}), "cred-a", (
+        {"tenantId": "tenant-a", "actions": ["write", "retain"],
+         "resourceScopes": [{"resourceType": "CLIENT_ACCOUNT", "resourceIds": ["client-a"]}]},
+    ))
+    record = AuditLedgerRepository(db_session).append_event(
+        AuditEventCreate(**dict(_event("client-a", "actor-a", "tenant-a"), timestamp="2020-01-01T00:00:00Z")), owner
+    )
+    record_sequence = record.sequence_num
+    db_session.rollback()
+    before = db_session.query(AuditRecordEntity).one()
+    before_state = (before.is_archived, before.archived_at, before.archival_reason)
+    state = db_session.query(LedgerStateEntity).one()
+    state_snapshot = (state.next_sequence, state.tip_hash)
+    db_session.rollback()
+
+    original_journal = LifecycleAndExportService._append_lifecycle_journal
+    monkeypatch.setattr(
+        LifecycleAndExportService,
+        "_append_lifecycle_journal",
+        staticmethod(lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("journal failure"))),
+    )
+    with pytest.raises(RuntimeError, match="journal failure"):
+        LifecycleAndExportService.apply_retention_policy(db_session, 1, "test", tenant_id="tenant-a", resource_id="client-a", principal=owner)
+    assert not db_session.info.get("ledger_lock_acquired")
+    assert not db_session.in_transaction()
+    after = db_session.query(AuditRecordEntity).one()
+    assert (after.is_archived, after.archived_at, after.archival_reason) == before_state
+    state_after = db_session.query(LedgerStateEntity).one()
+    assert (state_after.next_sequence, state_after.tip_hash) == state_snapshot
+    db_session.rollback()
+    monkeypatch.setattr(LifecycleAndExportService, "_append_lifecycle_journal", staticmethod(original_journal))
+    assert record_sequence == after.sequence_num
+
+
+@pytest.mark.parametrize("failure_method", ["flush", "commit"])
+def test_redaction_persistence_failure_cleans_allocator_ownership(db_session, monkeypatch, failure_method):
+    _configure_principals(monkeypatch)
+    from app.models.schemas import AuditEventCreate
+    from app.security import Principal
+    from app.storage.database import AuditRecordEntity
+    from app.storage.repository import AuditLedgerRepository
+    from app.services.lifecycle import LifecycleAndExportService
+
+    owner = Principal("actor-a", frozenset({"writer", "privacy_officer"}), "cred-a", (
+        {"tenantId": "tenant-a", "actions": ["write", "redact"],
+         "resourceScopes": [{"resourceType": "CLIENT_ACCOUNT", "resourceIds": ["client-a"]}]},
+    ))
+    record = AuditLedgerRepository(db_session).append_event(
+        AuditEventCreate(**dict(_event("client-a", "actor-a", "tenant-a"), payload={"justification": "before"})), owner
+    )
+    sequence = record.sequence_num
+    db_session.rollback()
+    before = db_session.query(AuditRecordEntity).one().payload_json
+    db_session.rollback()
+    original = getattr(db_session, failure_method)
+    monkeypatch.setattr(db_session, failure_method, lambda *a, **k: (_ for _ in ()).throw(RuntimeError(f"redaction {failure_method} failure")))
+    with pytest.raises(RuntimeError, match=f"redaction {failure_method} failure"):
+        LifecycleAndExportService.redact_record_fields(db_session, sequence, ["justification"], "test", owner)
+    assert not db_session.info.get("ledger_lock_acquired")
+    assert not db_session.info.get("ledger_transaction_invalid")
+    monkeypatch.setattr(db_session, failure_method, original)
+    db_session.rollback()
+    assert db_session.query(AuditRecordEntity).one().payload_json == before
+    db_session.rollback()
+
+
+def test_lifecycle_rollback_failure_invalidates_session(db_session, monkeypatch):
+    _configure_principals(monkeypatch)
+    from app.models.schemas import AuditEventCreate
+    from app.security import Principal
+    from app.storage.repository import AuditLedgerRepository
+    from app.services.lifecycle import LifecycleAndExportService
+
+    owner = Principal("actor-a", frozenset({"writer", "privacy_officer"}), "cred-a", (
+        {"tenantId": "tenant-a", "actions": ["write", "redact"],
+         "resourceScopes": [{"resourceType": "CLIENT_ACCOUNT", "resourceIds": ["client-a"]}]},
+    ))
+    record = AuditLedgerRepository(db_session).append_event(
+        AuditEventCreate(**dict(_event("client-a", "actor-a", "tenant-a"), payload={"justification": "before"})), owner
+    )
+    sequence = record.sequence_num
+    db_session.rollback()
+    original_journal = LifecycleAndExportService._append_lifecycle_journal
+    monkeypatch.setattr(LifecycleAndExportService, "_append_lifecycle_journal", staticmethod(lambda *a, **k: (_ for _ in ()).throw(RuntimeError("journal failure"))))
+    monkeypatch.setattr(db_session, "rollback", lambda: (_ for _ in ()).throw(RuntimeError("rollback failure")))
+    with pytest.raises(RuntimeError, match="journal failure"):
+        LifecycleAndExportService.redact_record_fields(db_session, sequence, ["justification"], "test", owner)
+    assert not db_session.info.get("ledger_lock_acquired")
+    assert db_session.info.get("ledger_transaction_invalid") is True
+    monkeypatch.setattr(LifecycleAndExportService, "_append_lifecycle_journal", staticmethod(original_journal))
+    with pytest.raises(RuntimeError, match="session was invalidated"):
+        LifecycleAndExportService.redact_record_fields(db_session, sequence, ["justification"], "retry", owner)
 
 
 def test_authenticated_actor_binding_cannot_be_replaced_by_request_actor(client, monkeypatch):

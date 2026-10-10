@@ -77,6 +77,120 @@ graph LR
 - `redaction_metadata_json`: Cryptographic commitment receipts for redacted fields.
 - `tenant_id`, `authenticated_subject`, `credential_id`, `attribution_mode`, `delegation_reason`, `protocol_version`: nullable legacy/V2 authorization and attribution fields. V1 rows remain unchanged and unknown legacy ownership is not inferred.
 
+### Versioned schema foundation
+
+Schema upgrades are tracked with Alembic (`alembic upgrade head`), rather than
+using `Base.metadata.create_all()` as a production upgrade mechanism. The
+initial revision recognizes the existing pre-migration SQLite shape, applies
+only additive columns/tables, and refuses an unrecognized schema before
+creating migration state. Fresh bootstrap uses the versioned baseline; the
+legacy rows, bytes, hashes, signatures, and sequence values are never rewritten.
+
+The revision adds an empty `ledger_state` foundation table with a singleton
+identifier constrained to `1`, `next_sequence >= 1`, a 64-character `tip_hash`,
+and `state_version >= 1`. This stage does not activate the append allocator or
+backfill a state row; those operations require a separately reviewed
+validation/allocator migration. PostgreSQL migration execution is prepared by
+the Alembic environment but remains unverified until a real PostgreSQL service
+and driver are exercised.
+
+SQLite reports DDL as non-transactional, so an operational failure during an
+additive upgrade can leave some new columns or tables present while the
+`alembic_version` row remains unstamped. Startup fails closed until the
+operator corrects the cause and reruns the same revision; the migration is
+idempotent over already-present additive objects and does not rewrite
+historical rows. A partial schema is never treated as proof that the upgrade
+completed.
+
+Startup also validates the schema represented by an existing
+`alembic_version` row. Unknown revisions, incomplete stamped schemas, malformed
+types/nullability/defaults, missing uniqueness, and missing ledger-state checks
+fail closed. An empty database may be initialized; a non-empty database without
+the recognized audit baseline is rejected and requires an explicit operator
+adoption decision. Migration tests preserve populated mixed-epoch values and
+run the real verifier after migration; PostgreSQL execution remains unverified.
+
+### PostgreSQL integration validation (Gate 1)
+
+PostgreSQL validation is opt-in and isolated from the SQLite default. The
+repository provides `docker-compose.postgres.yml` with PostgreSQL 16 and an
+ephemeral data volume, plus `requirements-postgres.txt` containing the psycopg 3
+driver. The tests require `POSTGRES_TEST_DATABASE_URL` to use the explicit
+`postgresql+psycopg` scheme and point to the local `audit_test` database;
+non-local hosts, other database names, and alternate drivers are rejected.
+
+Run locally:
+
+```powershell
+docker compose -f docker-compose.postgres.yml up -d --wait
+$env:POSTGRES_TEST_DATABASE_URL = "postgresql+psycopg://audit:audit@localhost:5432/audit_test"
+.venv\Scripts\python -m pip install -r requirements-postgres.txt
+.venv\Scripts\python -m pytest tests/postgres -q
+docker compose -f docker-compose.postgres.yml down -v
+```
+
+The integration tests run the real Alembic configuration and inspect PostgreSQL
+tables, nullability, uniqueness/indexes, check constraints, migration revision,
+repeatability, and empty-ledger initialization. Compose credentials are
+disposable local test credentials, not production secrets.
+
+The PostgreSQL tests include direct DML checks for the singleton, sequence,
+tip-hash, state-version, and audit-sequence constraints. Each expected failure
+uses its own transaction so a rejected statement cannot poison later checks.
+The fixture creates and resets the guarded test schema per test, keeping the
+integration cases order-independent.
+
+### PostgreSQL concurrency and transaction validation (Gate 2)
+
+The PostgreSQL suite also exercises the existing database allocator with
+independent sessions in separate processes. Writers serialize on the singleton
+`ledger_state` row using PostgreSQL row locking; tests assert unique contiguous
+sequences, `prev_hash` links, and the final state tip. Worker collection has a
+finite deadline and bounded termination cleanup; a hung worker is treated as a
+test failure, not a successful result. Failure-injection tests cover append
+flush failures and lifecycle journal failures, comparing persisted records,
+integrity/attribution fields, transitions, archive metadata, and ledger state
+before and after rollback. No retry or idempotency behavior is introduced by
+these tests.
+
+These checks require a real PostgreSQL service. When the service is unavailable,
+the URL tests still run but database-backed Gate 1 and Gate 2 tests are skipped;
+skips are not PostgreSQL execution evidence. Independent multi-host behavior,
+commit-outcome recovery, retries, and idempotency remain outside this gate.
+
+### Database-level ledger allocation
+
+All append paths use `AuditLedgerRepository.lock_ledger_state()`. SQLite takes
+`BEGIN IMMEDIATE`; PostgreSQL inserts the singleton row if necessary and locks it
+with `SELECT ... FOR UPDATE`. The allocator reads `next_sequence` and
+`tip_hash`, appends the record or lifecycle journal, advances both state fields,
+and commits them together. Allocator acquisition rejects every active caller
+transaction, including read-only and Core-SQL transactions; it never commits or
+rolls back caller-owned work. Callers must explicitly close or roll back their
+transaction before invoking an append or lifecycle mutation. The allocator then
+owns the transaction through commit or rollback and releases its in-memory lock
+marker on both paths.
+Empty state is initialized from the genesis
+convention; populated state is derived only by the explicit startup
+`initialize_ledger_state()` path after full-ledger verification. Ordinary append
+and lifecycle paths never backfill a missing state row: a populated ledger with
+missing state, inconsistent state, or inconsistent sequence/previous-hash links
+fails closed. A mismatch fails closed, and rejected allocator attempts roll back
+the lock-owning transaction so a SQLite writer lock is not leaked. Lifecycle
+journal creation requires the same session-held allocator lock and advances the
+same state row before commit. Retention and redaction wrap all post-lock work
+in failure cleanup so lookup, signing, flush, and commit failures roll back the
+record, journal, and state changes and clear allocator ownership. PostgreSQL
+execution and multi-instance behavior remain unverified in this environment.
+
+Allocator-owned append and lifecycle failures use a common fail-closed cleanup
+path. Rollback is attempted and ownership is invalidated in a `finally` path;
+if rollback itself fails, the SQLAlchemy session is marked unusable and must be
+closed/recreated before another allocation. The original operation exception is
+preserved, with cleanup failure attached as diagnostic context. A database
+commit exception may have an ambiguous external commit outcome; this prototype
+does not retry or claim that such an operation is safe to repeat.
+
 ### Startup integrity and quarantine
 
 After additive schema migration, the application performs a read-only full-ledger

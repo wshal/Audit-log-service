@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Column,
     DateTime,
     Index,
@@ -20,6 +21,199 @@ from sqlalchemy import (
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 Base = declarative_base()
+
+
+_BASE_AUDIT_COLUMNS = {
+    "id", "sequence_num", "event_type", "actor_id", "resource_type", "resource_id",
+    "payload_json", "timestamp", "content_hash", "prev_hash", "record_hash",
+    "is_archived", "archived_at", "archival_reason", "redaction_metadata_json",
+}
+_BASE_TRANSITION_COLUMNS = {
+    "id", "legacy_tip_hash", "legacy_record_count", "v2_genesis_hash",
+    "transition_hash", "transition_signature", "signing_key_id", "protocol_version",
+}
+_LEDGER_STATE_COLUMNS = {"singleton_id", "next_sequence", "tip_hash", "state_version"}
+
+_LEGACY_COLUMN_SPECS = {
+    "id": (Integer, False),
+    "sequence_num": (Integer, False),
+    "event_type": (String, False),
+    "actor_id": (String, False),
+    "resource_type": (String, False),
+    "resource_id": (String, False),
+    "payload_json": (Text, False),
+    "timestamp": (String, False),
+    "content_hash": (String, False),
+    "prev_hash": (String, False),
+    "record_hash": (String, False),
+    "is_archived": (Boolean, False),
+    "archived_at": (String, True),
+    "archival_reason": (String, True),
+    "redaction_metadata_json": (Text, True),
+}
+_OPTIONAL_AUDIT_COLUMN_SPECS = {
+    "record_signature": (Text, True),
+    "signing_key_id": (String, True),
+    "tenant_id": (String, True),
+    "authenticated_subject": (String, True),
+    "credential_id": (String, True),
+    "attribution_mode": (String, True),
+    "delegation_reason": (String, True),
+    "protocol_version": (Integer, False),
+}
+_TRANSITION_COLUMN_SPECS = {
+    "id": (Integer, False),
+    "legacy_tip_hash": (String, False),
+    "legacy_record_count": (Integer, False),
+    "v2_genesis_hash": (String, False),
+    "v2_genesis_sequence": (Integer, False),
+    "cutover_timestamp": (String, False),
+    "transition_hash": (String, False),
+    "transition_signature": (Text, False),
+    "signing_key_id": (String, False),
+    "protocol_version": (Integer, False),
+}
+_LEDGER_STATE_COLUMN_SPECS = {
+    "singleton_id": (Integer, False),
+    "next_sequence": (Integer, False),
+    "tip_hash": (String, False),
+    "state_version": (Integer, False),
+}
+
+
+def _type_family(type_object):
+    """Return a portable SQLAlchemy type family for SQLite/PostgreSQL checks."""
+    if isinstance(type_object, Boolean):
+        return Boolean
+    if isinstance(type_object, Integer):
+        return Integer
+    if isinstance(type_object, Text):
+        return Text
+    if isinstance(type_object, String):
+        return String
+    return type(type_object)
+
+
+def _validate_column_specs(inspector, table_name: str, specs: dict) -> None:
+    columns = {column["name"]: column for column in inspector.get_columns(table_name)}
+    missing = set(specs) - set(columns)
+    if missing:
+        raise RuntimeError(
+            f"Existing {table_name} schema is incompatible; missing columns: {', '.join(sorted(missing))}"
+        )
+    for name, (expected_type, expected_nullable) in specs.items():
+        column = columns[name]
+        actual_family = _type_family(column["type"])
+        if actual_family is not expected_type:
+            raise RuntimeError(
+                f"Existing {table_name}.{name} schema is incompatible; expected {expected_type.__name__}"
+            )
+        # SQLite reflection reports INTEGER PRIMARY KEY columns as nullable even
+        # though the primary-key constraint makes them non-null in practice.
+        reflected_nullable = bool(column.get("nullable"))
+        primary_key_name = name in {"id", "singleton_id"}
+        if not primary_key_name and reflected_nullable != expected_nullable:
+            state = "nullable" if expected_nullable else "non-nullable"
+            raise RuntimeError(f"Existing {table_name}.{name} schema is incompatible; expected {state}")
+
+
+def _validate_default(inspector, table_name: str, column_name: str, allowed: set[str]) -> None:
+    column = next(column for column in inspector.get_columns(table_name) if column["name"] == column_name)
+    default = column.get("default")
+    normalized = str(default).strip().strip("'").lower() if default is not None else "none"
+    if normalized not in allowed:
+        raise RuntimeError(
+            f"Existing {table_name}.{column_name} schema is incompatible; unexpected default {default!r}"
+        )
+
+
+def _has_unique_column(inspector, table_name: str, column_name: str) -> bool:
+    if any(set(item.get("column_names", ())) == {column_name}
+           for item in inspector.get_unique_constraints(table_name)):
+        return True
+    return any(index.get("unique") and set(index.get("column_names", ())) == {column_name}
+               for index in inspector.get_indexes(table_name))
+
+
+def _validate_table_shape(inspector, table_name: str, required_columns: set[str], *, unique_column: str) -> None:
+    actual = {column["name"] for column in inspector.get_columns(table_name)}
+    missing = required_columns - actual
+    if missing:
+        raise RuntimeError(
+            f"Existing {table_name} schema is incompatible; missing columns: {', '.join(sorted(missing))}"
+        )
+    primary_key = inspector.get_pk_constraint(table_name).get("constrained_columns", [])
+    if primary_key != ["id"]:
+        raise RuntimeError(f"Existing {table_name} schema is incompatible; expected primary key id")
+    if not _has_unique_column(inspector, table_name, unique_column):
+        raise RuntimeError(f"Existing {table_name} schema is incompatible; {unique_column} must be unique")
+
+
+def validate_pre_migration_schema(engine) -> None:
+    """Reject unknown pre-Alembic schemas before migration state is created."""
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    if "audit_records" not in tables:
+        if tables:
+            raise RuntimeError("Existing database has unrecognized non-empty schema; refusing fresh initialization")
+        return
+
+    _validate_column_specs(inspector, "audit_records", _LEGACY_COLUMN_SPECS)
+    _validate_default(inspector, "audit_records", "is_archived", {"0", "false", "false::boolean", "none"})
+    _validate_table_shape(inspector, "audit_records", _BASE_AUDIT_COLUMNS, unique_column="sequence_num")
+    present_optional = {
+        name: spec for name, spec in _OPTIONAL_AUDIT_COLUMN_SPECS.items()
+        if name in {column["name"] for column in inspector.get_columns("audit_records")}
+    }
+    if present_optional:
+        _validate_column_specs(inspector, "audit_records", present_optional)
+        if "protocol_version" in present_optional:
+            _validate_default(inspector, "audit_records", "protocol_version", {"1", "1::integer", "none"})
+    if "audit_epoch_transitions" in tables:
+        transition_columns = {column["name"] for column in inspector.get_columns("audit_epoch_transitions")}
+        _validate_column_specs(
+            inspector,
+            "audit_epoch_transitions",
+            {name: spec for name, spec in _TRANSITION_COLUMN_SPECS.items() if name in transition_columns},
+        )
+        _validate_table_shape(
+            inspector,
+            "audit_epoch_transitions",
+            _BASE_TRANSITION_COLUMNS,
+            unique_column="transition_hash",
+        )
+    if "ledger_state" in tables:
+        _validate_column_specs(inspector, "ledger_state", _LEDGER_STATE_COLUMN_SPECS)
+        primary_key = inspector.get_pk_constraint("ledger_state").get("constrained_columns", [])
+        if primary_key != ["singleton_id"]:
+            raise RuntimeError("Existing ledger_state schema is incompatible; expected primary key singleton_id")
+        checks = " ".join((item.get("sqltext") or "") for item in inspector.get_check_constraints("ledger_state"))
+        for fragment in ("singleton_id = 1", "next_sequence >= 1", "state_version >= 1", "length(tip_hash) = 64"):
+            if fragment not in checks:
+                raise RuntimeError(f"Existing ledger_state schema is incompatible; missing check {fragment}")
+
+
+def validate_current_schema(engine, revision: str) -> None:
+    """Validate a stamped revision before application code relies on it."""
+    if revision != "0001_schema_foundation":
+        raise RuntimeError(f"Unsupported or unknown database migration revision: {revision}")
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    required_tables = {"audit_records", "audit_epoch_transitions", "ledger_state", "alembic_version"}
+    missing_tables = required_tables - tables
+    if missing_tables:
+        raise RuntimeError("Stamped schema is incomplete; missing tables: " + ", ".join(sorted(missing_tables)))
+    _validate_column_specs(inspector, "audit_records", {**_LEGACY_COLUMN_SPECS, **_OPTIONAL_AUDIT_COLUMN_SPECS})
+    _validate_default(inspector, "audit_records", "is_archived", {"0", "false", "false::boolean", "none"})
+    _validate_default(inspector, "audit_records", "protocol_version", {"1", "1::integer", "none"})
+    _validate_table_shape(inspector, "audit_records", set(_LEGACY_COLUMN_SPECS) | set(_OPTIONAL_AUDIT_COLUMN_SPECS), unique_column="sequence_num")
+    _validate_column_specs(inspector, "audit_epoch_transitions", _TRANSITION_COLUMN_SPECS)
+    _validate_table_shape(inspector, "audit_epoch_transitions", set(_TRANSITION_COLUMN_SPECS), unique_column="transition_hash")
+    _validate_column_specs(inspector, "ledger_state", _LEDGER_STATE_COLUMN_SPECS)
+    checks = " ".join((item.get("sqltext") or "") for item in inspector.get_check_constraints("ledger_state"))
+    for fragment in ("singleton_id = 1", "next_sequence >= 1", "state_version >= 1", "length(tip_hash) = 64"):
+        if fragment not in checks:
+            raise RuntimeError(f"Stamped ledger_state schema is incompatible; missing check {fragment}")
 
 
 class AuditRecordEntity(Base):
@@ -108,6 +302,24 @@ class AuditEpochTransitionEntity(Base):
     protocol_version = Column(Integer, nullable=False, default=2)
 
 
+class LedgerStateEntity(Base):
+    """Singleton schema foundation for the future database-level allocator."""
+
+    __tablename__ = "ledger_state"
+
+    singleton_id = Column(Integer, primary_key=True)
+    next_sequence = Column(Integer, nullable=False, default=1)
+    tip_hash = Column(String(64), nullable=False, default="0" * 64)
+    state_version = Column(Integer, nullable=False, default=1)
+
+    __table_args__ = (
+        CheckConstraint("singleton_id = 1", name="ck_ledger_state_singleton"),
+        CheckConstraint("next_sequence >= 1", name="ck_ledger_state_next_sequence"),
+        CheckConstraint("length(tip_hash) = 64", name="ck_ledger_state_tip_hash_length"),
+        CheckConstraint("state_version >= 1", name="ck_ledger_state_version"),
+    )
+
+
 def get_engine(database_url: str = "sqlite:///audit_ledger.db"):
     # SQLite connection with thread checking disabled for FastAPI compatibility
     if database_url.startswith("sqlite"):
@@ -115,32 +327,78 @@ def get_engine(database_url: str = "sqlite:///audit_ledger.db"):
     return create_engine(database_url)
 
 
+def run_migrations(engine) -> None:
+    """Apply versioned migrations using the repository's Alembic environment."""
+    from pathlib import Path
+    from alembic import command
+    from alembic.config import Config
+
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    if "alembic_version" not in tables:
+        validate_pre_migration_schema(engine)
+    else:
+        with engine.connect() as connection:
+            revisions = [row[0] for row in connection.execute(text("SELECT version_num FROM alembic_version")).all()]
+        if len(revisions) > 1:
+            raise RuntimeError("Database has multiple migration revisions; refusing startup")
+        if revisions:
+            validate_current_schema(engine, revisions[0])
+
+    config = Config(str(Path(__file__).resolve().parents[2] / "alembic.ini"))
+    with engine.begin() as connection:
+        config.attributes["connection"] = connection
+        command.upgrade(config, "head")
+
+
 def init_db(engine):
-    """Creates tables and applies additive, nullable V2 migrations."""
-    Base.metadata.create_all(bind=engine)
-    if engine.dialect.name == "sqlite":
-        existing = {column["name"] for column in inspect(engine).get_columns("audit_records")}
-        with engine.begin() as connection:
-            if "record_signature" not in existing:
-                connection.execute(text("ALTER TABLE audit_records ADD COLUMN record_signature TEXT"))
-            if "signing_key_id" not in existing:
-                connection.execute(text("ALTER TABLE audit_records ADD COLUMN signing_key_id VARCHAR(128)"))
-            additions = {
-                "tenant_id": "VARCHAR(128)",
-                "authenticated_subject": "VARCHAR(128)",
-                "credential_id": "VARCHAR(128)",
-                "attribution_mode": "VARCHAR(32)",
-                "delegation_reason": "VARCHAR(512)",
-                "protocol_version": "INTEGER NOT NULL DEFAULT 1",
-            }
-            for name, definition in additions.items():
-                if name not in existing:
-                    connection.execute(text(f"ALTER TABLE audit_records ADD COLUMN {name} {definition}"))
-            transition_columns = {column["name"] for column in inspect(engine).get_columns("audit_epoch_transitions")}
-            if "v2_genesis_sequence" not in transition_columns:
-                connection.execute(text("ALTER TABLE audit_epoch_transitions ADD COLUMN v2_genesis_sequence INTEGER NOT NULL DEFAULT 0"))
-            if "cutover_timestamp" not in transition_columns:
-                connection.execute(text("ALTER TABLE audit_epoch_transitions ADD COLUMN cutover_timestamp VARCHAR(64) NOT NULL DEFAULT ''"))
+    """Compatibility entry point retained for tests and application startup."""
+    run_migrations(engine)
+
+
+def initialize_ledger_state(engine) -> None:
+    """Initialize the singleton state only after validating any existing ledger."""
+    from app.runtime_state import preflight_scope
+    from app.security import Principal
+    from app.services.verifier import ChainVerificationService
+
+    Session = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    session = Session()
+    try:
+        if engine.dialect.name == "sqlite":
+            session.execute(text("BEGIN IMMEDIATE"))
+        state = session.query(LedgerStateEntity).filter(LedgerStateEntity.singleton_id == 1).one_or_none()
+        records = session.query(AuditRecordEntity).order_by(AuditRecordEntity.sequence_num.asc()).all()
+        if records:
+            with preflight_scope():
+                result = ChainVerificationService.verify_ledger(
+                    session,
+                    principal=Principal("state-initializer", frozenset({"global_auditor"}), "state-initializer"),
+                )
+            if not result.intact:
+                raise RuntimeError("Cannot initialize ledger state from an invalid audit history")
+            expected_next = records[-1].sequence_num + 1
+            expected_tip = records[-1].record_hash
+        else:
+            expected_next = 1
+            expected_tip = "0" * 64
+        if state is None:
+            state = LedgerStateEntity(
+                singleton_id=1,
+                next_sequence=expected_next,
+                tip_hash=expected_tip,
+                state_version=1,
+            )
+            session.add(state)
+            session.flush()
+        elif (state.next_sequence, state.tip_hash) != (expected_next, expected_tip):
+            raise RuntimeError("Existing ledger state does not match the validated audit history")
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
 
 
 def get_session_factory(engine):

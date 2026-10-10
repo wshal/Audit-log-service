@@ -4,6 +4,7 @@ Retention, Redaction, and Verifiable Bulk Export Service (Scenario B).
 
 import json
 import uuid
+from functools import wraps
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from fastapi import HTTPException
@@ -17,13 +18,26 @@ from app.models.retention_redaction import (
     RetentionPolicyResult,
     VerifiableExportBundle,
 )
-from app.storage.database import AuditRecordEntity
+from app.storage.database import AuditRecordEntity, LedgerStateEntity
 from app.storage.repository import AuditLedgerRepository
 from app.models.schemas import AuditEventCreate
 from app.crypto.signer import sign_record_hash, signing_key_id
 from app.crypto.signer import public_key_ring
 from app.runtime_state import ensure_ready
 from app.authorization import authorize, authorize_legacy, authorize_record, require_operation_role, resolve_tenant_by_id
+
+
+def _cleanup_allocator_failure(operation):
+    """Rollback only a lock acquired by the wrapped lifecycle operation."""
+    @wraps(operation)
+    def wrapped(session, *args, **kwargs):
+        try:
+            return operation(session, *args, **kwargs)
+        except BaseException as original:
+            if session.info.get("ledger_lock_acquired"):
+                AuditLedgerRepository.cleanup_failed_transaction(session, original)
+            raise
+    return wrapped
 
 
 class LifecycleAndExportService:
@@ -43,20 +57,24 @@ class LifecycleAndExportService:
     def _append_lifecycle_journal(
         session: Session, event_type: str, resource_id: str, payload: Dict[str, Any], tenant_id: Optional[str] = None
     ) -> AuditRecordEntity:
-        """Append a system lifecycle event inside the caller's locked transaction."""
-        latest = session.query(AuditRecordEntity).order_by(AuditRecordEntity.sequence_num.desc()).first()
+        """Append inside a caller-owned allocator lock and transaction."""
+        if not session.info.get("ledger_lock_acquired"):
+            raise RuntimeError("Lifecycle journal requires an acquired ledger allocator lock")
+        ledger_state = session.query(LedgerStateEntity).filter(LedgerStateEntity.singleton_id == 1).one()
+        sequence_num = ledger_state.next_sequence
+        prev_hash = ledger_state.tip_hash
         timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         from app.crypto.hasher import compute_event_content_hash, compute_record_chain_hash
         content_hash = compute_event_content_hash(
             event_type, "audit-lifecycle-service", "AUDIT_RECORD", resource_id, payload, timestamp
             , tenant_id=tenant_id, authenticated_subject="audit-lifecycle-service", credential_id="service", attribution_mode="SYSTEM", delegation_reason=None, protocol_version=2 if tenant_id else 1
         )
-        record_hash = compute_record_chain_hash(latest.sequence_num + 1, content_hash, latest.record_hash)
+        record_hash = compute_record_chain_hash(sequence_num, content_hash, prev_hash)
         journal = AuditRecordEntity(
-            sequence_num=latest.sequence_num + 1, event_type=event_type,
+            sequence_num=sequence_num, event_type=event_type,
             actor_id="audit-lifecycle-service", resource_type="AUDIT_RECORD", resource_id=resource_id,
             payload_json=canonical_json(payload), timestamp=timestamp, content_hash=content_hash,
-            prev_hash=latest.record_hash, record_hash=record_hash,
+            prev_hash=prev_hash, record_hash=record_hash,
             record_signature=sign_record_hash(record_hash), signing_key_id=signing_key_id(),
             is_archived=False,
             tenant_id=tenant_id,
@@ -66,10 +84,13 @@ class LifecycleAndExportService:
             protocol_version=2 if tenant_id else 1,
         )
         session.add(journal)
+        ledger_state.next_sequence = sequence_num + 1
+        ledger_state.tip_hash = record_hash
         session.flush()
         return journal
 
     @staticmethod
+    @_cleanup_allocator_failure
     def apply_retention_policy(
         session: Session,
         retention_days: int,
@@ -97,8 +118,7 @@ class LifecycleAndExportService:
             authorize(principal, "retain", tenant_id, inferred[0], resource_id)
         else:
             authorize_legacy(principal, "retain")
-        if session.bind.dialect.name == "sqlite":
-            session.execute(text("BEGIN IMMEDIATE"))
+        AuditLedgerRepository.lock_ledger_state(session)
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=retention_days)
         cutoff_iso = cutoff_date.isoformat().replace("+00:00", "Z")
 
@@ -136,6 +156,7 @@ class LifecycleAndExportService:
                 tenant_id=rec.tenant_id,
             )
         session.commit()
+        AuditLedgerRepository.release_ledger_lock(session)
 
         return RetentionPolicyResult(
             recordsArchived=len(archived_seqs),
@@ -145,6 +166,7 @@ class LifecycleAndExportService:
         )
 
     @staticmethod
+    @_cleanup_allocator_failure
     def redact_record_fields(
         session: Session,
         sequence_num: int,
@@ -182,6 +204,7 @@ class LifecycleAndExportService:
                 scope_predicates.append(and_(*predicates))
         if not scope_predicates:
             raise ValueError("Audit record not found")
+        AuditLedgerRepository.lock_ledger_state(session)
         rec = session.query(AuditRecordEntity).filter(
             AuditRecordEntity.sequence_num == sequence_num,
             or_(*scope_predicates),
@@ -192,9 +215,6 @@ class LifecycleAndExportService:
             authorize_record(principal, "redact", rec)
         except HTTPException:
             raise ValueError("Audit record not found")
-
-        if session.bind.dialect.name == "sqlite":
-            session.execute(text("BEGIN IMMEDIATE"))
 
         current_payload = json.loads(rec.payload_json)
         existing_meta = json.loads(rec.redaction_metadata_json) if rec.redaction_metadata_json else None
@@ -244,16 +264,16 @@ class LifecycleAndExportService:
             },
             tenant_id=rec.tenant_id,
         )
-        session.commit()
-        session.refresh(rec)
-
-        return RedactionResult(
+        result = RedactionResult(
             sequenceNum=rec.sequence_num,
             redactedFields=field_paths,
             contentHashPreserved=rec.content_hash,
             recordHashPreserved=rec.record_hash,
             message="Field-level redaction applied. Cryptographic hashes preserved.",
         )
+        session.commit()
+        AuditLedgerRepository.release_ledger_lock(session)
+        return result
 
     @staticmethod
     def generate_verifiable_export(

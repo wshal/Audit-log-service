@@ -17,7 +17,7 @@ from app.config import settings
 from app.routers.audit import router as audit_router
 from app.routers.lifecycle import router as lifecycle_router
 from app.routers.compliance import router as compliance_router
-from app.storage.database import get_engine, get_session_factory, init_db
+from app.storage.database import get_engine, get_session_factory, init_db, initialize_ledger_state
 from app.security import Principal
 from app.services.verifier import ChainVerificationService
 from app.runtime_state import get_state, set_state, preflight_scope
@@ -216,6 +216,7 @@ async def lifespan(app: FastAPI):
     # Schema migration must complete before the read-only integrity preflight.
     try:
         init_db(engine)
+        initialize_ledger_state(engine)
         run_integrity_preflight()
     except Exception:
         try:
