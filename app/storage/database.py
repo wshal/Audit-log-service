@@ -52,6 +52,13 @@ class AuditRecordEntity(Base):
     
     # Structured redaction metadata (stores commitments/salts for masked fields)
     redaction_metadata_json = Column(Text, nullable=True)
+    # Versioned tenant-bound epoch (nullable for frozen V1 records).
+    tenant_id = Column(String(128), nullable=True, index=True)
+    authenticated_subject = Column(String(128), nullable=True)
+    credential_id = Column(String(128), nullable=True)
+    attribution_mode = Column(String(32), nullable=True)
+    delegation_reason = Column(String(512), nullable=True)
+    protocol_version = Column(Integer, nullable=False, default=1)
 
     __table_args__ = (
         Index("idx_audit_resource", "resource_type", "resource_id"),
@@ -78,7 +85,27 @@ class AuditRecordEntity(Base):
             "isArchived": self.is_archived,
             "archivedAt": self.archived_at,
             "redactionMetadata": json.loads(self.redaction_metadata_json) if self.redaction_metadata_json else None,
+            "tenantId": self.tenant_id,
+            "authenticatedSubject": self.authenticated_subject,
+            "credentialId": self.credential_id,
+            "attributionMode": self.attribution_mode,
+            "protocolVersion": self.protocol_version or 1,
         }
+
+
+class AuditEpochTransitionEntity(Base):
+    """Signed, immutable evidence for the V1 to V2 protocol cutover."""
+    __tablename__ = "audit_epoch_transitions"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    legacy_tip_hash = Column(String(64), nullable=False)
+    legacy_record_count = Column(Integer, nullable=False)
+    v2_genesis_hash = Column(String(64), nullable=False)
+    v2_genesis_sequence = Column(Integer, nullable=False)
+    cutover_timestamp = Column(String(64), nullable=False)
+    transition_hash = Column(String(64), nullable=False, unique=True)
+    transition_signature = Column(Text, nullable=False)
+    signing_key_id = Column(String(128), nullable=False)
+    protocol_version = Column(Integer, nullable=False, default=2)
 
 
 def get_engine(database_url: str = "sqlite:///audit_ledger.db"):
@@ -89,7 +116,7 @@ def get_engine(database_url: str = "sqlite:///audit_ledger.db"):
 
 
 def init_db(engine):
-    """Creates tables and applies the two additive prototype schema migrations."""
+    """Creates tables and applies additive, nullable V2 migrations."""
     Base.metadata.create_all(bind=engine)
     if engine.dialect.name == "sqlite":
         existing = {column["name"] for column in inspect(engine).get_columns("audit_records")}
@@ -98,6 +125,22 @@ def init_db(engine):
                 connection.execute(text("ALTER TABLE audit_records ADD COLUMN record_signature TEXT"))
             if "signing_key_id" not in existing:
                 connection.execute(text("ALTER TABLE audit_records ADD COLUMN signing_key_id VARCHAR(128)"))
+            additions = {
+                "tenant_id": "VARCHAR(128)",
+                "authenticated_subject": "VARCHAR(128)",
+                "credential_id": "VARCHAR(128)",
+                "attribution_mode": "VARCHAR(32)",
+                "delegation_reason": "VARCHAR(512)",
+                "protocol_version": "INTEGER NOT NULL DEFAULT 1",
+            }
+            for name, definition in additions.items():
+                if name not in existing:
+                    connection.execute(text(f"ALTER TABLE audit_records ADD COLUMN {name} {definition}"))
+            transition_columns = {column["name"] for column in inspect(engine).get_columns("audit_epoch_transitions")}
+            if "v2_genesis_sequence" not in transition_columns:
+                connection.execute(text("ALTER TABLE audit_epoch_transitions ADD COLUMN v2_genesis_sequence INTEGER NOT NULL DEFAULT 0"))
+            if "cutover_timestamp" not in transition_columns:
+                connection.execute(text("ALTER TABLE audit_epoch_transitions ADD COLUMN cutover_timestamp VARCHAR(64) NOT NULL DEFAULT ''"))
 
 
 def get_session_factory(engine):

@@ -18,19 +18,26 @@ from app.crypto.hasher import (
 )
 from app.models.schemas import AuditEventCreate, QueryFilters
 from app.storage.database import AuditRecordEntity
+from app.storage.database import AuditEpochTransitionEntity
 from app.crypto.signer import sign_record_hash, signing_key_id
+from app.authorization import authorize, authorize_legacy, resolve_tenant, resolve_tenant_by_id
+from app.runtime_state import ensure_ready
 
 
 class AuditLedgerRepository:
     def __init__(self, db_session: Session):
         self.session = db_session
 
-    def append_event(self, event_in: AuditEventCreate) -> AuditRecordEntity:
+    def append_event(self, event_in: AuditEventCreate, principal=None) -> AuditRecordEntity:
         """
         Atomically appends an audit record to the ledger.
         Fetches the previous tip of the chain, increments sequence_num,
         computes content hash and record hash, and persists the new block.
         """
+        ensure_ready()
+        if getattr(event_in, "tenantId", None) and principal is None:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=403, detail="Authenticated tenant scope is required")
         # SQLite has no row-level SELECT ... FOR UPDATE. BEGIN IMMEDIATE takes the
         # single writer lock before reading the tip, preventing two requests from
         # calculating the same next sequence number/previous hash.
@@ -51,7 +58,13 @@ class AuditLedgerRepository:
             sequence_num = latest_record.sequence_num + 1
             prev_hash = latest_record.record_hash
 
-        # Compute content hash
+        protocol_version = 2 if getattr(event_in, "tenantId", None) else 1
+        attribution_mode = ("PROXY" if (getattr(event_in, "impersonatedActorId", None) or (principal and getattr(event_in, "actorId", None) != getattr(principal, "subject", None) and "audit_proxy" in getattr(principal, "roles", ()))) else "DIRECT") if principal else None
+        authenticated_subject = getattr(principal, "subject", None)
+        credential_id = getattr(principal, "credential_id", None)
+        delegation_reason = getattr(event_in, "delegationReason", None)
+
+        # Compute content hash. V2 binds caller attribution and protocol metadata.
         content_hash = compute_event_content_hash(
             event_type=event_in.eventType,
             actor_id=event_in.actorId,
@@ -59,7 +72,16 @@ class AuditLedgerRepository:
             resource_id=event_in.resourceId,
             payload=event_in.payload,
             timestamp=event_in.timestamp,
+            tenant_id=getattr(event_in, "tenantId", None),
+            authenticated_subject=authenticated_subject,
+            credential_id=credential_id,
+            attribution_mode=attribution_mode,
+            delegation_reason=delegation_reason,
+            protocol_version=protocol_version,
         )
+        legacy_records = self.session.query(AuditRecordEntity).filter(AuditRecordEntity.protocol_version == 1).order_by(AuditRecordEntity.sequence_num.desc()).all()
+        legacy_tip = legacy_records[0].record_hash if legacy_records else GENESIS_PREV_HASH
+        legacy_count = len(legacy_records)
 
         # Compute block record hash
         record_hash = compute_record_chain_hash(
@@ -85,22 +107,59 @@ class AuditLedgerRepository:
             archived_at=None,
             archival_reason=None,
             redaction_metadata_json=None,
+            tenant_id=getattr(event_in, "tenantId", None),
+            authenticated_subject=getattr(principal, "subject", None),
+            credential_id=getattr(principal, "credential_id", None),
+            attribution_mode=attribution_mode,
+            delegation_reason=delegation_reason,
+            protocol_version=protocol_version,
         )
 
-        self.session.add(record_entity)
         try:
+            transition = None
+            if getattr(event_in, "tenantId", None) and not self.session.query(AuditEpochTransitionEntity).first():
+                from app.crypto.hasher import compute_sha256
+                cutover_timestamp = event_in.timestamp
+                transition_material = canonical_json({"legacyTipHash": legacy_tip, "legacyRecordCount": legacy_count, "v2GenesisHash": record_hash, "v2GenesisSequence": sequence_num, "cutoverTimestamp": cutover_timestamp, "protocolVersion": 2})
+                transition_hash = compute_sha256(transition_material)
+                transition = AuditEpochTransitionEntity(
+                    legacy_tip_hash=legacy_tip, legacy_record_count=legacy_count,
+                    v2_genesis_hash=record_hash, v2_genesis_sequence=sequence_num,
+                    cutover_timestamp=cutover_timestamp, transition_hash=transition_hash,
+                    transition_signature=sign_record_hash(transition_hash), signing_key_id=signing_key_id(), protocol_version=2,
+                )
+            self.session.add(record_entity)
+            if transition is not None:
+                self.session.add(transition)
             self.session.commit()
-        except IntegrityError:
+        except (IntegrityError, RuntimeError, ValueError):
             self.session.rollback()
             raise
         self.session.refresh(record_entity)
         return record_entity
 
-    def query_events(self, filters: QueryFilters) -> Tuple[List[AuditRecordEntity], int]:
+    def query_events(self, filters: QueryFilters, principal=None, tenant_id: str | None = None) -> Tuple[List[AuditRecordEntity], int]:
         """
         Filters audit records by actor, resource, eventType, timestamp ranges with pagination.
         """
-        query = self.session.query(AuditRecordEntity)
+        ensure_ready()
+        if principal is None:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=403, detail="Authorization scope is required")
+        inferred = resolve_tenant_by_id(filters.resourceId) if filters.resourceId and not filters.resourceType else None
+        if inferred:
+            tenant_id = inferred[2]
+        elif filters.resourceType and filters.resourceId:
+            tenant_id = resolve_tenant(filters.resourceType, filters.resourceId)
+        if tenant_id:
+            authorize(principal, "read", tenant_id, filters.resourceType, filters.resourceId)
+            query = self.session.query(AuditRecordEntity).filter(AuditRecordEntity.tenant_id == tenant_id)
+        else:
+            if not getattr(principal, "legacy_access", False):
+                from fastapi import HTTPException
+                raise HTTPException(status_code=403, detail="A tenant or explicit legacy scope is required")
+            authorize_legacy(principal, "read")
+            query = self.session.query(AuditRecordEntity)
 
         if filters.actorId:
             query = query.filter(AuditRecordEntity.actor_id == filters.actorId)
@@ -126,8 +185,12 @@ class AuditLedgerRepository:
 
         return results, total_count
 
-    def get_all_ordered_by_sequence(self) -> List[AuditRecordEntity]:
+    def get_all_ordered_by_sequence(self, principal=None) -> List[AuditRecordEntity]:
         """Fetches all records in ascending sequence order for chain verification."""
+        ensure_ready()
+        if principal is None or "global_auditor" not in getattr(principal, "roles", ()):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=403, detail="Global auditor capability is required")
         return (
             self.session.query(AuditRecordEntity)
             .order_by(AuditRecordEntity.sequence_num.asc())

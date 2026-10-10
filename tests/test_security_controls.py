@@ -53,7 +53,7 @@ def test_role_is_enforced(monkeypatch):
 
 def test_writer_cannot_impersonate_another_actor(monkeypatch):
     monkeypatch.setenv(
-        "AUDIT_API_KEYS", '{"writer-key":{"subject":"advisor-1","roles":["writer"]}}'
+        "AUDIT_API_KEYS", '{"writer-key":{"subject":"advisor-1","roles":["writer"],"legacyAccess":true}}'
     )
     _credentials.cache_clear()
     try:

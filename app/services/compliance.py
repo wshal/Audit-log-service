@@ -16,7 +16,9 @@ from app.models.compliance import (
 )
 from app.services.verifier import ChainVerificationService
 from app.storage.database import AuditRecordEntity
+from app.security import Principal
 from app.models.schemas import normalize_iso8601
+from app.runtime_state import ensure_ready
 
 CLIENT_ACCESS_EVENT_TYPES = {
     "ACCOUNT_VIEWED", "ACCOUNT_MODIFIED", "PORTFOLIO_EXPORTED", "SSN_ACCESSED",
@@ -26,17 +28,36 @@ CLIENT_ACCESS_EVENT_TYPES = {
 
 class ComplianceService:
     @staticmethod
+    def _project_payload(payload: dict, include_pii: bool) -> dict:
+        if include_pii:
+            return payload
+        sensitive = {"ssn", "taxid", "tax_id", "accountnumber", "account_number", "dob", "dateofbirth"}
+        def project(value):
+            if isinstance(value, dict):
+                return {k: project(v) for k, v in value.items() if k.lower() not in sensitive}
+            if isinstance(value, list):
+                return [project(v) for v in value]
+            return value
+        return project(payload)
+
+    @staticmethod
     def generate_client_access_audit_report(
         session: Session,
         client_id: str,
         from_time: Optional[str] = None,
         to_time: Optional[str] = None,
         actor_id: Optional[str] = None,
+        include_pii: bool = False,
+        principal=None,
     ) -> ComplianceAuditReport:
         """
         Extracts audit events for client data access, analyzes actor patterns,
         flags regulatory anomalies, and verifies cryptographic integrity.
         """
+        ensure_ready()
+        if principal is None:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=403, detail="Authorization scope is required")
         if from_time:
             from_time = normalize_iso8601(from_time)
         if to_time:
@@ -77,7 +98,9 @@ class ComplianceService:
                     f"Sequence #{r.sequence_num}: Access by actor '{actor}' lacks regulatory justification."
                 )
 
-            event_dicts.append(r.to_read_model())
+            event = r.to_read_model()
+            event["payload"] = ComplianceService._project_payload(event["payload"], include_pii)
+            event_dicts.append(event)
 
         # Check for excessive access frequency anomaly (> 20 accesses by single actor)
         for actor, data in actor_stats.items():
@@ -87,7 +110,10 @@ class ComplianceService:
                 )
 
         # Verify underlying chain integrity
-        verification = ChainVerificationService.verify_ledger(session)
+        verification = ChainVerificationService.verify_ledger(
+            session,
+            principal=Principal("compliance-service", frozenset({"global_auditor"}), "internal-compliance"),
+        )
 
         actors_summary = [
             ActorAccessSummary(

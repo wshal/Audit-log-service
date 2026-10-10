@@ -22,14 +22,37 @@ from app.crypto.hasher import (
 from app.crypto.signer import public_key_for_id, verify_record_signature
 from app.models.schemas import VerificationResult, ViolationType
 from app.storage.database import AuditRecordEntity
+from app.storage.database import AuditEpochTransitionEntity
 from app.storage.repository import AuditLedgerRepository
+from app.runtime_state import ensure_ready
 
 
 class ChainVerificationService:
     @staticmethod
-    def verify_ledger(session: Session) -> VerificationResult:
+    def verify_ledger(session: Session, principal=None) -> VerificationResult:
+        ensure_ready()
+        if principal is None or "global_auditor" not in getattr(principal, "roles", ()):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=403, detail="Global auditor capability is required")
         repo = AuditLedgerRepository(session)
-        records: List[AuditRecordEntity] = repo.get_all_ordered_by_sequence()
+        records: List[AuditRecordEntity] = repo.get_all_ordered_by_sequence(principal=principal)
+
+        v2_records = [r for r in records if (r.protocol_version or 1) >= 2]
+        if v2_records:
+            transition = session.query(AuditEpochTransitionEntity).order_by(AuditEpochTransitionEntity.id.asc()).first()
+            if transition is None or transition.v2_genesis_hash != v2_records[0].record_hash:
+                return VerificationResult(intact=False, recordsVerified=0, violationType=ViolationType.CHAIN_LINK_BROKEN, details="Missing or invalid V1/V2 transition evidence.")
+            material = canonical_json({"legacyTipHash": transition.legacy_tip_hash, "legacyRecordCount": transition.legacy_record_count, "v2GenesisHash": transition.v2_genesis_hash, "v2GenesisSequence": transition.v2_genesis_sequence, "cutoverTimestamp": transition.cutover_timestamp, "protocolVersion": 2})
+            if compute_sha256(material) != transition.transition_hash:
+                return VerificationResult(intact=False, recordsVerified=0, violationType=ViolationType.RECORD_HASH_MISMATCH, details="V1/V2 transition evidence was tampered with.")
+            key = public_key_for_id(transition.signing_key_id)
+            if not key or not verify_record_signature(transition.transition_hash, transition.transition_signature, key):
+                return VerificationResult(intact=False, recordsVerified=0, violationType=ViolationType.SIGNATURE_MISMATCH, details="V1/V2 transition signature is invalid.")
+            v1_records = [r for r in records if (r.protocol_version or 1) == 1]
+            if len(v1_records) != transition.legacy_record_count or (v1_records[-1].record_hash if v1_records else GENESIS_PREV_HASH) != transition.legacy_tip_hash:
+                return VerificationResult(intact=False, recordsVerified=0, violationType=ViolationType.CHAIN_LINK_BROKEN, details="Transition does not match the actual V1 epoch.")
+            if v2_records[0].sequence_num != transition.v2_genesis_sequence:
+                return VerificationResult(intact=False, recordsVerified=0, violationType=ViolationType.SEQUENCE_DISCONTINUITY, details="Transition does not match the first V2 sequence.")
 
         total = len(records)
         if total == 0:
@@ -127,6 +150,12 @@ class ChainVerificationService:
                     resource_id=rec.resource_id,
                     payload=payload,
                     timestamp=rec.timestamp,
+                    tenant_id=rec.tenant_id if (rec.protocol_version or 1) >= 2 else None,
+                    authenticated_subject=rec.authenticated_subject if (rec.protocol_version or 1) >= 2 else None,
+                    credential_id=rec.credential_id if (rec.protocol_version or 1) >= 2 else None,
+                    attribution_mode=rec.attribution_mode if (rec.protocol_version or 1) >= 2 else None,
+                    delegation_reason=rec.delegation_reason if (rec.protocol_version or 1) >= 2 else None,
+                    protocol_version=rec.protocol_version if (rec.protocol_version or 1) >= 2 else None,
                 )
                 if recomputed_content_hash != rec.content_hash:
                     return VerificationResult(

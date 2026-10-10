@@ -12,6 +12,8 @@ class RetentionPolicyApplyRequest(BaseModel):
     """
     retentionDays: int = Field(..., gt=0, description="Age threshold in days for archival")
     reason: str = Field(default="Standard data retention policy schedule", min_length=1, max_length=256, description="Audit trail reason")
+    tenantId: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    resourceId: Optional[str] = Field(default=None, min_length=1, max_length=256)
 
 
 class RetentionPolicyResult(BaseModel):

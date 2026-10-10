@@ -34,6 +34,9 @@ class AuditEventCreate(BaseModel):
         default_factory=lambda: datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         description="ISO-8601 timestamp. If omitted, server assigns authoritative UTC timestamp.",
     )
+    tenantId: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    impersonatedActorId: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    delegationReason: Optional[str] = Field(default=None, max_length=512)
 
     @field_validator("timestamp")
     @classmethod
@@ -86,6 +89,11 @@ class AuditRecordRead(BaseModel):
         default=None,
         description="Field-level redaction commitments and proofs (Scenario B)"
     )
+    tenantId: Optional[str] = None
+    authenticatedSubject: Optional[str] = None
+    credentialId: Optional[str] = None
+    attributionMode: Optional[str] = None
+    protocolVersion: int = 1
 
     model_config = {"from_attributes": True}
 

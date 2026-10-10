@@ -19,6 +19,8 @@ from app.models.retention_redaction import (
 from app.routers.audit import get_db
 from app.services.lifecycle import LifecycleAndExportService
 from app.security import Principal, require_roles
+from app.authorization import authorize, authorize_legacy, authorize_tenant_action, resolve_tenant, resolve_tenant_by_id
+from app.storage.database import AuditRecordEntity
 
 router = APIRouter(prefix="/audit", tags=["Retention & Redaction"])
 
@@ -32,12 +34,24 @@ router = APIRouter(prefix="/audit", tags=["Retention & Redaction"])
 def apply_retention_policy(
     request: RetentionPolicyApplyRequest,
     db: Session = Depends(get_db),
-    _: Principal = Depends(require_roles("retention_admin")),
+    principal: Principal = Depends(require_roles("retention_admin")),
 ):
+    if request.tenantId:
+        if not request.resourceId:
+            raise HTTPException(status_code=403, detail="A resource scope is required for tenant retention")
+        inferred = resolve_tenant_by_id(request.resourceId)
+        if not inferred:
+            raise HTTPException(status_code=403, detail="Unknown resource")
+        authorize(principal, "retain", request.tenantId, inferred[0], request.resourceId)
+    else:
+        authorize_legacy(principal, "retain")
     return LifecycleAndExportService.apply_retention_policy(
         session=db,
         retention_days=request.retentionDays,
         reason=request.reason,
+        tenant_id=request.tenantId,
+        resource_id=request.resourceId,
+        principal=principal,
     )
 
 
@@ -50,14 +64,22 @@ def apply_retention_policy(
 def redact_audit_record(
     request: RedactionRequest,
     db: Session = Depends(get_db),
-    _: Principal = Depends(require_roles("privacy_officer")),
+    principal: Principal = Depends(require_roles("privacy_officer")),
 ):
+    record = db.query(AuditRecordEntity).filter(AuditRecordEntity.sequence_num == request.sequenceNum).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Audit record not found")
+    if record.tenant_id:
+        authorize(principal, "redact", record.tenant_id, record.resource_type, record.resource_id)
+    else:
+        authorize_legacy(principal, "redact")
     try:
         return LifecycleAndExportService.redact_record_fields(
             session=db,
             sequence_num=request.sequenceNum,
             field_paths=request.fieldPaths,
             reason=request.reason,
+            principal=principal,
         )
     except ValueError as e:
         code = status.HTTP_404_NOT_FOUND if "not found" in str(e) else status.HTTP_422_UNPROCESSABLE_CONTENT
@@ -74,15 +96,26 @@ def export_audit_records(
     actorId: Optional[str] = Query(None, description="Actor identifier to export"),
     resourceId: Optional[str] = Query(None, description="Resource identifier to export"),
     db: Session = Depends(get_db),
-    _: Principal = Depends(require_roles("exporter")),
+    principal: Principal = Depends(require_roles("exporter")),
 ):
     if not actorId and not resourceId:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="At least one of actorId or resourceId must be supplied for export",
         )
+    if principal.tenant_grants:
+        if not resourceId:
+            raise HTTPException(status_code=403, detail="Tenant-scoped export requires a resource identifier")
+        inferred = resolve_tenant_by_id(resourceId)
+        if not inferred:
+            raise HTTPException(status_code=403, detail="Unknown resource")
+        authorize(principal, "export", inferred[2], inferred[0], resourceId)
+    else:
+        authorize_legacy(principal, "export")
     return LifecycleAndExportService.generate_verifiable_export(
         session=db,
         actor_id=actorId,
         resource_id=resourceId,
+        include_pii="pii_reader" in principal.roles,
+        principal=principal,
     )

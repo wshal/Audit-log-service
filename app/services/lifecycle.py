@@ -21,12 +21,25 @@ from app.storage.repository import AuditLedgerRepository
 from app.models.schemas import AuditEventCreate
 from app.crypto.signer import sign_record_hash, signing_key_id
 from app.crypto.signer import public_key_ring
+from app.runtime_state import ensure_ready
 
 
 class LifecycleAndExportService:
     @staticmethod
+    def _project_payload(payload: Dict[str, Any], include_pii: bool) -> Dict[str, Any]:
+        if include_pii:
+            return payload
+        sensitive = {"ssn", "taxid", "tax_id", "accountnumber", "account_number", "dob", "dateofbirth"}
+        def project(value):
+            if isinstance(value, dict):
+                return {k: project(v) for k, v in value.items() if k.lower() not in sensitive}
+            if isinstance(value, list):
+                return [project(v) for v in value]
+            return value
+        return project(payload)
+    @staticmethod
     def _append_lifecycle_journal(
-        session: Session, event_type: str, resource_id: str, payload: Dict[str, Any]
+        session: Session, event_type: str, resource_id: str, payload: Dict[str, Any], tenant_id: Optional[str] = None
     ) -> AuditRecordEntity:
         """Append a system lifecycle event inside the caller's locked transaction."""
         latest = session.query(AuditRecordEntity).order_by(AuditRecordEntity.sequence_num.desc()).first()
@@ -34,6 +47,7 @@ class LifecycleAndExportService:
         from app.crypto.hasher import compute_event_content_hash, compute_record_chain_hash
         content_hash = compute_event_content_hash(
             event_type, "audit-lifecycle-service", "AUDIT_RECORD", resource_id, payload, timestamp
+            , tenant_id=tenant_id, authenticated_subject="audit-lifecycle-service", credential_id="service", attribution_mode="SYSTEM", delegation_reason=None, protocol_version=2 if tenant_id else 1
         )
         record_hash = compute_record_chain_hash(latest.sequence_num + 1, content_hash, latest.record_hash)
         journal = AuditRecordEntity(
@@ -43,6 +57,11 @@ class LifecycleAndExportService:
             prev_hash=latest.record_hash, record_hash=record_hash,
             record_signature=sign_record_hash(record_hash), signing_key_id=signing_key_id(),
             is_archived=False,
+            tenant_id=tenant_id,
+            authenticated_subject="audit-lifecycle-service" if tenant_id else None,
+            credential_id="service" if tenant_id else None,
+            attribution_mode="SYSTEM" if tenant_id else None,
+            protocol_version=2 if tenant_id else 1,
         )
         session.add(journal)
         session.flush()
@@ -53,6 +72,9 @@ class LifecycleAndExportService:
         session: Session,
         retention_days: int,
         reason: str,
+        tenant_id: Optional[str] = None,
+        resource_id: Optional[str] = None,
+        principal=None,
     ) -> RetentionPolicyResult:
         """
         Soft-archives records older than `retention_days`.
@@ -60,17 +82,25 @@ class LifecycleAndExportService:
         Chain verification will confirm all records are present and unbroken without
         false-positive alerts for legitimately archived records.
         """
+        ensure_ready()
+        if principal is None:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=403, detail="Authorization scope is required")
         if session.bind.dialect.name == "sqlite":
             session.execute(text("BEGIN IMMEDIATE"))
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=retention_days)
         cutoff_iso = cutoff_date.isoformat().replace("+00:00", "Z")
 
-        records_to_archive = (
+        records_query = (
             session.query(AuditRecordEntity)
             .filter(AuditRecordEntity.timestamp < cutoff_iso)
             .filter(AuditRecordEntity.is_archived == False)
-            .all()
         )
+        if tenant_id:
+            records_query = records_query.filter(AuditRecordEntity.tenant_id == tenant_id)
+        if resource_id:
+            records_query = records_query.filter(AuditRecordEntity.resource_id == resource_id)
+        records_to_archive = records_query.all()
 
         archived_seqs = []
         now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -92,6 +122,7 @@ class LifecycleAndExportService:
             LifecycleAndExportService._append_lifecycle_journal(
                 session, "AUDIT_RECORD_ARCHIVED", str(rec.sequence_num),
                 {"archiveStateHash": compute_sha256(canonical_json(archive_state)), **archive_state},
+                tenant_id=rec.tenant_id,
             )
         session.commit()
 
@@ -108,12 +139,14 @@ class LifecycleAndExportService:
         sequence_num: int,
         field_paths: List[str],
         reason: str,
+        principal=None,
     ) -> RedactionResult:
         """
         Performs structured field redaction on a record:
         Replaces sensitive plaintext values with cryptographic commitments while preserving
         original contentHash and recordHash integrity in the blockchain.
         """
+        ensure_ready()
         if session.bind.dialect.name == "sqlite":
             session.execute(text("BEGIN IMMEDIATE"))
 
@@ -124,6 +157,9 @@ class LifecycleAndExportService:
         )
         if not rec:
             raise ValueError(f"Audit record with sequence {sequence_num} not found")
+        if principal is None:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=403, detail="Authorization scope is required")
 
         current_payload = json.loads(rec.payload_json)
         existing_meta = json.loads(rec.redaction_metadata_json) if rec.redaction_metadata_json else None
@@ -171,6 +207,7 @@ class LifecycleAndExportService:
                 "redactedSequenceNum": rec.sequence_num,
                 "reason": reason,
             },
+            tenant_id=rec.tenant_id,
         )
         session.commit()
         session.refresh(rec)
@@ -188,12 +225,18 @@ class LifecycleAndExportService:
         session: Session,
         actor_id: Optional[str] = None,
         resource_id: Optional[str] = None,
+        include_pii: bool = False,
+        principal=None,
     ) -> VerifiableExportBundle:
         """
         Generates a self-contained, verifiable export bundle for a resourceId or actorId.
         The bundle includes chain metadata, sequence bounds, and a bundle-level integrity hash
         calculated over the canonical sequence of record hashes.
         """
+        ensure_ready()
+        if principal is None:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=403, detail="Authorization scope is required")
         query = session.query(AuditRecordEntity)
         criteria = {}
 
@@ -207,6 +250,8 @@ class LifecycleAndExportService:
         records = query.order_by(AuditRecordEntity.sequence_num.asc()).all()
 
         record_dicts = [r.to_read_model() for r in records]
+        for record in record_dicts:
+            record["payload"] = LifecycleAndExportService._project_payload(record["payload"], include_pii)
         selected_sequences = {r.sequence_num for r in records}
         manifests = []
         lifecycle_records = session.query(AuditRecordEntity).filter(
