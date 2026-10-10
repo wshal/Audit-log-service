@@ -118,13 +118,16 @@ $env:AUDIT_SIGNING_PUBLIC_KEYS = '{"ed25519-2026-10":"<base64 Ed25519 public key
 $env:AUDIT_CORS_ORIGINS = "https://audit.example.com"
 ```
 
-Supported RBAC roles: `reader`, `writer`, `retention_admin`, `privacy_officer`, `exporter`, `compliance_reviewer`; `admin` grants full access.
+Supported RBAC roles: `reader`, `writer`, `retention_admin`, `privacy_officer`, `exporter`, `compliance_reviewer`, and `admin`. Administrator privileges do not bypass tenant isolation or actor-attribution rules, and do not replace the explicit legacy-access or legacy-PII capabilities required for V1 operations.
 
 ### 2. Run Test Suite
 ```bash
-pytest -v
+python -m pytest -q
+python -m pytest -q --cov=app --cov-branch --cov-report=term-missing --cov-fail-under=85
+python -m compileall -q app tests
 ```
-All **22 automated tests** validate:
+The current suite contains **93 automated tests** (including configuration
+failure regressions). They validate:
 - Append-only write & hash chain linking
 - Multi-parameter indexed querying
 - Tamper detection upon direct database payload modification
@@ -136,6 +139,13 @@ All **22 automated tests** validate:
 - Independent verifiable bulk export bundle integrity with Ed25519 key ring
 - Regulatory compliance reporting and anomaly detection
 - API authentication/role enforcement, Ed25519 record signatures, offline signature verification, lifecycle-manifest witnesses, and archival-state tamper detection
+
+Coverage is measured with `pytest-cov`: the final run is 91.08% line
+coverage, 78.76% branch coverage, and 88.27% combined coverage (the pre-change
+baseline was 90.77% line and 88.04% combined). CI enforces an
+85% combined threshold. See [docs/requirements_test_matrix.md](docs/requirements_test_matrix.md)
+for the maintained requirement-to-test mapping. The suite uses isolated SQLite;
+PostgreSQL integration is not claimed.
 
 See [docs/audit_review.md](docs/audit_review.md) for the implementation audit and hardening record.
 For a copy/paste clean-database walkthrough of every scenario with expected outputs, see [docs/manual_validation.md](docs/manual_validation.md).

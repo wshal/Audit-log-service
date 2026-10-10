@@ -80,7 +80,19 @@ Stop the service with `Ctrl+C`, then run:
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-Expected: `51 passed` (plus one dependency deprecation warning). The combined flow is `test_end_to_end_ideal_workflow` in `tests/test_security_controls.py`; tenant authorization coverage is in `tests/test_tenant_authorization.py`, and startup quarantine/direct-entry/recovery coverage is in `tests/test_preflight_quarantine.py`.
+Expected: `93 passed` (plus one dependency deprecation warning). The combined flow is `test_end_to_end_ideal_workflow` in `tests/test_security_controls.py`; tenant authorization coverage is in `tests/test_tenant_authorization.py`, and startup quarantine/direct-entry/recovery coverage is in `tests/test_preflight_quarantine.py`.
+
+For reproducible coverage and compile validation, run:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q --cov=app --cov-branch --cov-report=term-missing --cov-fail-under=85
+.\.venv\Scripts\python.exe -m compileall -q app tests
+```
+
+The final measured run is 91.08% line coverage, 78.76% branch coverage, and
+88.27% combined coverage (pre-change baseline: 90.77% line and 88.04%
+combined). PostgreSQL is not exercised by these
+commands.
 
 If startup is quarantined after repair, set a unique one-time token in
 `AUDIT_QUARANTINE_RECOVERY_TOKEN` for one process start. The token hash and

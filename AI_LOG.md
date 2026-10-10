@@ -231,3 +231,17 @@ This document records the traceability of AI assistance throughout the developme
   - Added a positive compliance control with the explicit `legacyPiiReader` capability.
 - **Validation**: Tenant tests **35 passed**; migration plus tenant tests **36 passed**; full suite **91 passed**; compileall and `git diff --check` exited successfully. The existing Starlette/httpx deprecation warning remains.
 - **Status**: No production code, Prompt 2A recovery behavior, coverage configuration, or CI files were changed. No commit or push was performed.
+
+### Entry 21: Establish reproducible coverage and CI validation
+- **Date**: 2026-10-11
+- **Intent**: Measure and improve test reliability, coverage evidence, and clean-checkout reproducibility without changing authorization, recovery, or database concurrency behavior.
+- **Engineer Decision**: **Implemented the approved test-quality scope only.**
+  - Added the declared `pytest-cov` dependency and `.coveragerc` with branch instrumentation and no broad application exclusions.
+  - Added two meaningful fail-closed configuration tests for malformed API-key and resource-ownership configuration.
+  - Added a maintained requirements-to-test matrix covering authorization, integrity, lifecycle, recovery, failure handling, and the SQLite-only limitation.
+  - Added a minimal Windows/Python 3.12 GitHub Actions workflow running the full suite, line/branch coverage, the 85% combined gate, compile checks, and uploading `coverage.xml`.
+  - Updated current test and coverage instructions while preserving historical test counts as historical records.
+- **Baseline validation**: The pre-change suite had **91 passed**. Measured baseline coverage was **90.77% line**, **78.76% branch**, and **88.04% combined**.
+- **Threshold rationale**: The CI gate is **85% combined coverage**, below the measured baseline to allow platform-dependent startup/error branches while preventing material regression. Branch coverage is reported separately and is not represented as PostgreSQL or distributed-system evidence.
+- **Final validation**: `python -m pytest -q` => **93 passed**, one existing Starlette/httpx deprecation warning. Coverage command with line and branch instrumentation => **91.08% line**, **78.76% branch**, **88.27% combined**, and the configured **85% combined gate passed**. `python -m compileall -q app tests` and `git diff --check` both exited successfully.
+- **Limitations**: Coverage and tests use isolated SQLite only; no PostgreSQL integration, distributed deployment, or Prompt 2B recovery redesign is included. GitHub Actions has not been executed in this local environment; its commands match the validated local coverage and compile commands.

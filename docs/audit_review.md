@@ -39,7 +39,7 @@ The new signature and manifest checks intentionally reject records written by th
 
 ## Validation run
 
-`\.venv\Scripts\python.exe -m pytest -q` completed successfully: **33 passed** (one dependency deprecation warning).
+Historical validation record: `\.venv\Scripts\python.exe -m pytest -q` completed with **33 passed** at the earlier review checkpoint. The current suite and coverage evidence are maintained in [requirements_test_matrix.md](requirements_test_matrix.md); current tests use isolated SQLite and PostgreSQL integration is not claimed.
 
 ## Phase 1B remediation status
 
