@@ -6,7 +6,8 @@ import json
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
-from sqlalchemy import text
+from fastapi import HTTPException
+from sqlalchemy import and_, or_, text
 from sqlalchemy.orm import Session
 
 from app.crypto.hasher import canonical_json, compute_sha256
@@ -22,6 +23,7 @@ from app.models.schemas import AuditEventCreate
 from app.crypto.signer import sign_record_hash, signing_key_id
 from app.crypto.signer import public_key_ring
 from app.runtime_state import ensure_ready
+from app.authorization import authorize, authorize_legacy, authorize_record, require_operation_role, resolve_tenant_by_id
 
 
 class LifecycleAndExportService:
@@ -83,9 +85,18 @@ class LifecycleAndExportService:
         false-positive alerts for legitimately archived records.
         """
         ensure_ready()
-        if principal is None:
-            from fastapi import HTTPException
-            raise HTTPException(status_code=403, detail="Authorization scope is required")
+        require_operation_role(principal, "retain")
+        if tenant_id or resource_id:
+            if not tenant_id or not resource_id:
+                from app.authorization import deny
+                deny("A tenant and resource scope are required")
+            inferred = resolve_tenant_by_id(resource_id)
+            if not inferred or inferred[2] != tenant_id:
+                from app.authorization import deny
+                deny("Unknown or foreign resource")
+            authorize(principal, "retain", tenant_id, inferred[0], resource_id)
+        else:
+            authorize_legacy(principal, "retain")
         if session.bind.dialect.name == "sqlite":
             session.execute(text("BEGIN IMMEDIATE"))
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=retention_days)
@@ -147,19 +158,43 @@ class LifecycleAndExportService:
         original contentHash and recordHash integrity in the blockchain.
         """
         ensure_ready()
+        require_operation_role(principal, "redact")
+        scope_predicates = []
+        if "global_auditor" in getattr(principal, "roles", ()):
+            scope_predicates.append(AuditRecordEntity.protocol_version == 1)
+        for grant in getattr(principal, "tenant_grants", ()):
+            if grant.get("tenantId") is None:
+                continue
+            actions = set(grant.get("actions", ()))
+            if "redact" not in actions and "*" not in actions:
+                continue
+            scopes = grant.get("resourceScopes") or []
+            if not scopes:
+                scope_predicates.append(AuditRecordEntity.tenant_id == grant["tenantId"])
+                continue
+            for scope in scopes:
+                predicates = [AuditRecordEntity.tenant_id == grant["tenantId"]]
+                if scope.get("resourceType"):
+                    predicates.append(AuditRecordEntity.resource_type == scope["resourceType"])
+                ids = scope.get("resourceIds") or scope.get("resources") or "*"
+                if ids != "*":
+                    predicates.append(AuditRecordEntity.resource_id.in_(list(ids)))
+                scope_predicates.append(and_(*predicates))
+        if not scope_predicates:
+            raise ValueError("Audit record not found")
+        rec = session.query(AuditRecordEntity).filter(
+            AuditRecordEntity.sequence_num == sequence_num,
+            or_(*scope_predicates),
+        ).first()
+        if not rec:
+            raise ValueError("Audit record not found")
+        try:
+            authorize_record(principal, "redact", rec)
+        except HTTPException:
+            raise ValueError("Audit record not found")
+
         if session.bind.dialect.name == "sqlite":
             session.execute(text("BEGIN IMMEDIATE"))
-
-        rec = (
-            session.query(AuditRecordEntity)
-            .filter(AuditRecordEntity.sequence_num == sequence_num)
-            .first()
-        )
-        if not rec:
-            raise ValueError(f"Audit record with sequence {sequence_num} not found")
-        if principal is None:
-            from fastapi import HTTPException
-            raise HTTPException(status_code=403, detail="Authorization scope is required")
 
         current_payload = json.loads(rec.payload_json)
         existing_meta = json.loads(rec.redaction_metadata_json) if rec.redaction_metadata_json else None
@@ -234,9 +269,10 @@ class LifecycleAndExportService:
         calculated over the canonical sequence of record hashes.
         """
         ensure_ready()
-        if principal is None:
-            from fastapi import HTTPException
-            raise HTTPException(status_code=403, detail="Authorization scope is required")
+        require_operation_role(principal, "export", include_pii=include_pii)
+        if not actor_id and not resource_id:
+            from app.authorization import deny
+            deny("An actor or resource scope is required")
         query = session.query(AuditRecordEntity)
         criteria = {}
 
@@ -247,6 +283,21 @@ class LifecycleAndExportService:
             query = query.filter(AuditRecordEntity.resource_id == resource_id)
             criteria["resourceId"] = resource_id
 
+        if resource_id:
+            inferred = resolve_tenant_by_id(resource_id)
+            if inferred:
+                authorize(principal, "export", inferred[2], inferred[0], resource_id)
+                query = query.filter(AuditRecordEntity.tenant_id == inferred[2])
+            else:
+                authorize_legacy(principal, "export", include_pii=include_pii)
+                query = query.filter(AuditRecordEntity.protocol_version == 1)
+        elif getattr(principal, "tenant_grants", ()):
+            from app.authorization import deny
+            deny("Tenant-scoped export requires a resource scope")
+        else:
+            authorize_legacy(principal, "export", include_pii=include_pii)
+            query = query.filter(AuditRecordEntity.protocol_version == 1)
+
         records = query.order_by(AuditRecordEntity.sequence_num.asc()).all()
 
         record_dicts = [r.to_read_model() for r in records]
@@ -254,9 +305,23 @@ class LifecycleAndExportService:
             record["payload"] = LifecycleAndExportService._project_payload(record["payload"], include_pii)
         selected_sequences = {r.sequence_num for r in records}
         manifests = []
-        lifecycle_records = session.query(AuditRecordEntity).filter(
+        lifecycle_query = session.query(AuditRecordEntity).filter(
             AuditRecordEntity.event_type.in_(["AUDIT_RECORD_REDACTED", "AUDIT_RECORD_ARCHIVED"])
-        ).order_by(AuditRecordEntity.sequence_num.asc()).all()
+        )
+        # Apply the same authorization boundary to lifecycle evidence before
+        # loading rows.  Python-side filtering alone would still read unrelated
+        # tenant manifests through a direct service invocation.
+        if resource_id:
+            inferred_resource = resolve_tenant_by_id(resource_id)
+            if inferred_resource:
+                lifecycle_query = lifecycle_query.filter(
+                    AuditRecordEntity.tenant_id == inferred_resource[2]
+                )
+            else:
+                lifecycle_query = lifecycle_query.filter(AuditRecordEntity.protocol_version == 1)
+        else:
+            lifecycle_query = lifecycle_query.filter(AuditRecordEntity.protocol_version == 1)
+        lifecycle_records = lifecycle_query.order_by(AuditRecordEntity.sequence_num.asc()).all()
         for lifecycle_record in lifecycle_records:
             try:
                 payload = json.loads(lifecycle_record.payload_json)

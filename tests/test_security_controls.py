@@ -14,6 +14,7 @@ def _event():
     return {
         "eventType": "ACCOUNT_VIEWED", "actorId": "advisor", "resourceType": "ACCOUNT",
         "resourceId": "a-1", "payload": {"purpose": "review"},
+        "delegationReason": "scenario fixture ingestion",
         "timestamp": "2026-10-08T00:00:00Z",
     }
 
@@ -128,10 +129,10 @@ def test_compliance_excludes_non_access_events_and_rejects_bad_times(client):
 
 def test_end_to_end_ideal_workflow(client):
     events = [
-        {"eventType": "ACCOUNT_VIEWED", "actorId": "advisor-lena", "resourceType": "CLIENT_ACCOUNT", "resourceId": "client-demo", "payload": {"justification": "PORTFOLIO_REVIEW", "clientConsent": True, "ssn": "123-45-6789"}, "timestamp": "2026-10-01T09:00:00Z"},
-        {"eventType": "HOLDINGS_EXPORTED", "actorId": "advisor-lena", "resourceType": "CLIENT_ACCOUNT", "resourceId": "client-demo", "payload": {"justification": "TAX_FILING_PREP", "exportFormat": "PDF"}, "timestamp": "2026-10-01T09:30:00Z"},
-        {"eventType": "ACCOUNT_VIEWED", "actorId": "intern-sam", "resourceType": "CLIENT_ACCOUNT", "resourceId": "client-demo", "payload": {"viewedFields": ["taxId"]}, "timestamp": "2026-10-01T10:00:00Z"},
-        {"eventType": "LOGIN", "actorId": "retention-service", "resourceType": "SYSTEM", "resourceId": "old-record", "payload": {}, "timestamp": "2020-01-01T00:00:00Z"},
+        {"eventType": "ACCOUNT_VIEWED", "actorId": "advisor-lena", "resourceType": "CLIENT_ACCOUNT", "resourceId": "client-demo", "payload": {"justification": "PORTFOLIO_REVIEW", "clientConsent": True, "ssn": "123-45-6789"}, "delegationReason": "scenario fixture ingestion", "timestamp": "2026-10-01T09:00:00Z"},
+        {"eventType": "HOLDINGS_EXPORTED", "actorId": "advisor-lena", "resourceType": "CLIENT_ACCOUNT", "resourceId": "client-demo", "payload": {"justification": "TAX_FILING_PREP", "exportFormat": "PDF"}, "delegationReason": "scenario fixture ingestion", "timestamp": "2026-10-01T09:30:00Z"},
+        {"eventType": "ACCOUNT_VIEWED", "actorId": "intern-sam", "resourceType": "CLIENT_ACCOUNT", "resourceId": "client-demo", "payload": {"viewedFields": ["taxId"]}, "delegationReason": "scenario fixture ingestion", "timestamp": "2026-10-01T10:00:00Z"},
+        {"eventType": "LOGIN", "actorId": "retention-service", "resourceType": "SYSTEM", "resourceId": "old-record", "payload": {}, "delegationReason": "scenario fixture ingestion", "timestamp": "2020-01-01T00:00:00Z"},
     ]
     for event in events:
         assert client.post("/audit/events", json=event).status_code == 201

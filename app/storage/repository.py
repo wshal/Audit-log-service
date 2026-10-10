@@ -20,7 +20,7 @@ from app.models.schemas import AuditEventCreate, QueryFilters
 from app.storage.database import AuditRecordEntity
 from app.storage.database import AuditEpochTransitionEntity
 from app.crypto.signer import sign_record_hash, signing_key_id
-from app.authorization import authorize, authorize_legacy, resolve_tenant, resolve_tenant_by_id
+from app.authorization import authorize, authorize_legacy, require_operation_role, resolve_tenant, resolve_tenant_by_id
 from app.runtime_state import ensure_ready
 
 
@@ -35,9 +35,22 @@ class AuditLedgerRepository:
         computes content hash and record hash, and persists the new block.
         """
         ensure_ready()
-        if getattr(event_in, "tenantId", None) and principal is None:
+        if principal is None:
             from fastapi import HTTPException
             raise HTTPException(status_code=403, detail="Authenticated tenant scope is required")
+        actor_substituted = bool(getattr(event_in, "impersonatedActorId", None)) or event_in.actorId != principal.subject
+        if actor_substituted and (
+            "audit_proxy" not in getattr(principal, "roles", ())
+            or not getattr(event_in, "delegationReason", None)
+        ):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=403, detail="Explicit proxy delegation is required")
+        if getattr(event_in, "tenantId", None):
+            require_operation_role(principal, "write")
+            authorize(principal, "write", event_in.tenantId, event_in.resourceType, event_in.resourceId)
+        else:
+            require_operation_role(principal, "write")
+            authorize_legacy(principal, "write")
         # SQLite has no row-level SELECT ... FOR UPDATE. BEGIN IMMEDIATE takes the
         # single writer lock before reading the tip, preventing two requests from
         # calculating the same next sequence number/previous hash.
@@ -143,9 +156,7 @@ class AuditLedgerRepository:
         Filters audit records by actor, resource, eventType, timestamp ranges with pagination.
         """
         ensure_ready()
-        if principal is None:
-            from fastapi import HTTPException
-            raise HTTPException(status_code=403, detail="Authorization scope is required")
+        require_operation_role(principal, "read")
         inferred = resolve_tenant_by_id(filters.resourceId) if filters.resourceId and not filters.resourceType else None
         if inferred:
             tenant_id = inferred[2]
@@ -155,11 +166,8 @@ class AuditLedgerRepository:
             authorize(principal, "read", tenant_id, filters.resourceType, filters.resourceId)
             query = self.session.query(AuditRecordEntity).filter(AuditRecordEntity.tenant_id == tenant_id)
         else:
-            if not getattr(principal, "legacy_access", False):
-                from fastapi import HTTPException
-                raise HTTPException(status_code=403, detail="A tenant or explicit legacy scope is required")
             authorize_legacy(principal, "read")
-            query = self.session.query(AuditRecordEntity)
+            query = self.session.query(AuditRecordEntity).filter(AuditRecordEntity.protocol_version == 1)
 
         if filters.actorId:
             query = query.filter(AuditRecordEntity.actor_id == filters.actorId)

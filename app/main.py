@@ -64,39 +64,83 @@ def _recovery_consumed_path() -> Path:
     return marker.with_name(marker.name + ".recovery-consumed")
 
 
+def _fsync_directory(directory: Path) -> bool:
+    """Durably flush a directory entry where the platform supports it.
+
+    Windows and filesystems without ``O_DIRECTORY`` cannot provide this
+    guarantee; callers receive ``False`` and must document that limitation.
+    Actual open/fsync failures are raised so recovery remains fail-closed.
+    """
+    directory_flag = getattr(os, "O_DIRECTORY", None)
+    if directory_flag is None:
+        return False
+    directory_fd = os.open(str(directory), directory_flag)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+    return True
+
+
 def _consume_recovery_token() -> bool:
+    """Atomically consume one recovery token on the configured filesystem.
+
+    O_EXCL is the ownership decision: only one process can create the durable
+    reservation. A reservation is intentionally retained if writing its outcome
+    fails, preventing a failed attempt from making the token reusable.
+    """
     token = os.getenv("AUDIT_QUARANTINE_RECOVERY_TOKEN", "")
     if not token:
         return False
     digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
     consumed = _recovery_consumed_path()
-    if consumed.exists():
-        return False
     consumed.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=f".{consumed.name}.", dir=str(consumed.parent), text=True)
+    try:
+        fd = os.open(str(consumed), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return False
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
             stream.write(json.dumps({"tokenHash": digest, "outcome": "attempted"}) + "\n")
             stream.flush(); os.fsync(stream.fileno())
-        os.replace(temporary, consumed)
-        return True
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
+        _fsync_directory(consumed.parent)
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+    return True
 
 
 def _record_recovery_outcome(outcome: str) -> None:
+    if outcome not in {"attempted", "failed", "successful"}:
+        raise ValueError("invalid recovery outcome")
     path = _recovery_consumed_path()
-    if not path.exists():
-        return
     current = json.loads(path.read_text(encoding="utf-8"))
+    if (
+        not isinstance(current, dict)
+        or not isinstance(current.get("tokenHash"), str)
+        or not current["tokenHash"]
+        or current.get("outcome") not in {"attempted", "failed", "successful"}
+    ):
+        raise ValueError("invalid recovery reservation state")
     current["outcome"] = outcome
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent), text=True)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            stream.write(json.dumps(current) + "\n")
-            stream.flush(); os.fsync(stream.fileno())
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write(json.dumps(current) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+        except Exception:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            raise
         os.replace(temporary, path)
+        _fsync_directory(path.parent)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)

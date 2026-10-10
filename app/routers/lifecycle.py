@@ -66,13 +66,6 @@ def redact_audit_record(
     db: Session = Depends(get_db),
     principal: Principal = Depends(require_roles("privacy_officer")),
 ):
-    record = db.query(AuditRecordEntity).filter(AuditRecordEntity.sequence_num == request.sequenceNum).first()
-    if not record:
-        raise HTTPException(status_code=404, detail="Audit record not found")
-    if record.tenant_id:
-        authorize(principal, "redact", record.tenant_id, record.resource_type, record.resource_id)
-    else:
-        authorize_legacy(principal, "redact")
     try:
         return LifecycleAndExportService.redact_record_fields(
             session=db,

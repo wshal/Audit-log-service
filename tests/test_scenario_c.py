@@ -12,11 +12,12 @@ def test_compliance_client_access_report_generation(client):
             "actorId": "advisor-john",
             "resourceType": "CLIENT_ACCOUNT",
             "resourceId": "client-act-001",
-            "payload": {
+                "payload": {
                 "justification": "PORTFOLIO_REVIEW",
                 "clientConsent": True,
                 "viewedFields": ["balance", "holdings"],
-            },
+                },
+                "delegationReason": "scenario fixture ingestion",
             "timestamp": "2026-10-07T09:00:00Z",
         },
     )
@@ -29,10 +30,11 @@ def test_compliance_client_access_report_generation(client):
             "actorId": "advisor-john",
             "resourceType": "CLIENT_ACCOUNT",
             "resourceId": "client-act-001",
-            "payload": {
+                "payload": {
                 "justification": "TAX_FILING_PREP",
                 "exportFormat": "PDF",
-            },
+                },
+                "delegationReason": "scenario fixture ingestion",
             "timestamp": "2026-10-07T09:30:00Z",
         },
     )
@@ -45,9 +47,10 @@ def test_compliance_client_access_report_generation(client):
             "actorId": "intern-sam",
             "resourceType": "CLIENT_ACCOUNT",
             "resourceId": "client-act-001",
-            "payload": {
+                "payload": {
                 "viewedFields": ["taxId", "ssn"],
-            },
+                },
+                "delegationReason": "scenario fixture ingestion",
             "timestamp": "2026-10-07T10:00:00Z",
         },
     )

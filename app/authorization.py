@@ -8,6 +8,15 @@ from fastapi import HTTPException, status
 
 from app.security import Principal
 
+_ACTION_ROLES = {
+    "read": "reader",
+    "write": "writer",
+    "export": "exporter",
+    "compliance": "compliance_reviewer",
+    "redact": "privacy_officer",
+    "retain": "retention_admin",
+}
+
 
 @lru_cache(maxsize=1)
 def resource_registry() -> dict[tuple[str, str], str]:
@@ -39,9 +48,47 @@ def deny(detail: str = "Not authorized for this resource") -> None:
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
 
 
-def authorize_legacy(principal: Principal, action: str) -> None:
-    if not principal.legacy_access:
+def authorize_legacy(principal: Principal, action: str, *, include_pii: bool = False) -> None:
+    """Authorize an operation against the immutable V1 legacy epoch.
+
+    Legacy reads are global-auditor-only.  V1 writes are a separate explicit
+    capability retained for compatibility with the migration/ingestion path.
+    V1 lifecycle mutation is intentionally unsupported by this service.
+    """
+    if principal is None:
         deny("Legacy ledger access requires an explicit legacy grant")
+    if action in {"read", "export", "compliance"}:
+        if "global_auditor" not in principal.roles:
+            deny("Global legacy-auditor capability is required")
+        if include_pii and not getattr(principal, "legacy_pii_reader", False):
+            deny("Legacy PII access requires an explicit legacy PII capability")
+        return
+    if action == "write":
+        if not getattr(principal, "legacy_write", False) and not getattr(principal, "legacy_access", False):
+            deny("Explicit legacy-write capability is required")
+        return
+    if action in {"redact", "retain"} and "global_auditor" in principal.roles:
+        return
+    deny("Legacy records are immutable to tenant-scoped principals")
+
+
+def require_operation_role(principal: Principal, action: str, *, include_pii: bool = False) -> None:
+    """Enforce the operation role at service/repository boundaries, not just routers."""
+    if principal is None:
+        deny("Authorization scope is required")
+    role = _ACTION_ROLES.get(action)
+    if role and role not in principal.roles:
+        deny("Insufficient role for this operation")
+    if include_pii and "pii_reader" not in principal.roles:
+        deny("PII export requires an explicit PII reader capability")
+
+
+def authorize_record(principal: Principal, action: str, record, *, include_pii: bool = False) -> None:
+    require_operation_role(principal, action, include_pii=include_pii)
+    if getattr(record, "tenant_id", None):
+        authorize(principal, action, record.tenant_id, record.resource_type, record.resource_id)
+    else:
+        authorize_legacy(principal, action)
 
 
 def grant_allows(principal: Principal, action: str, tenant_id: str, resource_type: str | None = None,

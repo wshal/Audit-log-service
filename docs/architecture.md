@@ -91,6 +91,18 @@ been consumed; a persistent token cannot silently authorize repeated recovery.
 Marker durability is bounded by the filesystem (directory fsync is best-effort).
 No historical row or hash is rewritten automatically. Valid signed tail
 truncation remains undetectable without an external trusted checkpoint.
+Recovery-token consumption uses an exclusive file-create reservation, which is
+single-use across processes sharing the same durable marker filesystem. It is
+not a multi-host lock when workers have separate local or ephemeral volumes.
+Recovery outcome state is mandatory: missing, malformed, unreadable, or failed
+atomic persistence keeps the marker and service quarantined. Outcome files use
+same-directory temporary files, file fsync, replacement, and best-effort
+directory fsync where supported; unsupported directory durability is an
+explicit filesystem limitation rather than proof of recovery.
+Initial reservation creation also flushes the reservation file and containing
+directory before recovery proceeds. A genuine directory-open or fsync failure
+is fatal to the attempt; only an unavailable directory-fsync primitive is
+treated as an explicit unsupported-platform limitation.
 
 ---
 

@@ -19,6 +19,7 @@ from app.storage.database import AuditRecordEntity
 from app.security import Principal
 from app.models.schemas import normalize_iso8601
 from app.runtime_state import ensure_ready
+from app.authorization import authorize, authorize_legacy, require_operation_role, resolve_tenant
 
 CLIENT_ACCESS_EVENT_TYPES = {
     "ACCOUNT_VIEWED", "ACCOUNT_MODIFIED", "PORTFOLIO_EXPORTED", "SSN_ACCESSED",
@@ -55,9 +56,12 @@ class ComplianceService:
         flags regulatory anomalies, and verifies cryptographic integrity.
         """
         ensure_ready()
-        if principal is None:
-            from fastapi import HTTPException
-            raise HTTPException(status_code=403, detail="Authorization scope is required")
+        require_operation_role(principal, "compliance", include_pii=include_pii)
+        tenant_id = resolve_tenant("CLIENT_ACCOUNT", client_id)
+        if tenant_id:
+            authorize(principal, "compliance", tenant_id, "CLIENT_ACCOUNT", client_id)
+        else:
+            authorize_legacy(principal, "compliance", include_pii=include_pii)
         if from_time:
             from_time = normalize_iso8601(from_time)
         if to_time:
@@ -70,6 +74,10 @@ class ComplianceService:
             AuditRecordEntity.resource_type.in_(["CLIENT_ACCOUNT", "PORTFOLIO"]),
             AuditRecordEntity.event_type.in_(CLIENT_ACCESS_EVENT_TYPES),
         )
+        if tenant_id:
+            query = query.filter(AuditRecordEntity.tenant_id == tenant_id)
+        else:
+            query = query.filter(AuditRecordEntity.protocol_version == 1)
 
         if from_time:
             query = query.filter(AuditRecordEntity.timestamp >= from_time)

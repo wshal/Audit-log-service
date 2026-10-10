@@ -52,7 +52,7 @@ A proxy caller needs the explicit `audit_proxy` role and matching write scope. I
 
 V1 has no tenant field. It remains a frozen, read-only legacy epoch: its original bytes, hashes, signatures, sequences, and V1 verifier stay unchanged. No tenant will be inferred or backfilled.
 
-Only `global_auditor` can access legacy records; legacy payload access additionally requires `legacy_pii_reader`. Tenant-scoped users cannot query, export, redact, retain, or receive compliance reports for V1 records. Privacy or retention requests concerning V1 are handled by an approved external process and a separately recorded case reference; this service does not silently mutate V1 history.
+Only `global_auditor` can access legacy records; legacy payload access additionally requires `legacy_pii_reader`. Tenant-scoped users cannot query, export, redact, retain, or receive compliance reports for V1 records. Explicit global-auditor legacy lifecycle operations are an operator-controlled exception; ordinary tenant and admin-only principals cannot mutate V1 history, and no operation silently rewrites historical hashes.
 
 V2 is a separate protocol epoch represented by non-null tenant and attribution fields in the current table. Its signed transition evidence contains the final V1 count and tip hash, first V2 sequence and record hash, cutover timestamp, protocol version, and a signature over canonical transition content. It does not rewrite V1. A future deployment may move V2 to a physically separate table/sequence space.
 
