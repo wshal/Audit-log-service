@@ -2,6 +2,7 @@
 
 import json
 import pytest
+from fastapi import HTTPException
 
 from fastapi.testclient import TestClient
 
@@ -335,8 +336,147 @@ def test_repository_v1_append_requires_explicit_legacy_write(db_session, monkeyp
     admin = Principal("admin", frozenset({"admin", "writer"}), "admin")
     with pytest.raises(Exception):
         repo.append_event(event, admin)
-    legacy_writer = Principal("legacy", frozenset({"writer"}), "legacy", (), True)
+    legacy_writer = Principal("actor", frozenset({"writer"}), "legacy", (), True)
     assert repo.append_event(event, legacy_writer).sequence_num == 1
+
+
+def test_repository_rejects_forged_actor_without_proxy_and_preserves_database(db_session, monkeypatch):
+    _configure_principals(monkeypatch)
+    from app.models.schemas import AuditEventCreate
+    from app.security import Principal
+    from app.storage.database import AuditRecordEntity
+    from app.storage.repository import AuditLedgerRepository
+    owner = Principal("actor-a", frozenset({"writer"}), "cred-a", (
+        {"tenantId": "tenant-a", "actions": ["write"],
+         "resourceScopes": [{"resourceType": "CLIENT_ACCOUNT", "resourceIds": ["client-a"]}]},
+    ))
+    event = AuditEventCreate(**_event("client-a", "actor-b", "tenant-a"))
+    with pytest.raises(HTTPException) as exc:
+        AuditLedgerRepository(db_session).append_event(event, owner)
+    assert exc.value.status_code == 403
+    assert db_session.query(AuditRecordEntity).count() == 0
+
+
+def test_repository_accepts_authenticated_and_explicit_proxy_attribution(db_session, monkeypatch):
+    _configure_principals(monkeypatch)
+    from app.models.schemas import AuditEventCreate
+    from app.security import Principal
+    from app.storage.repository import AuditLedgerRepository
+    direct = Principal("actor-a", frozenset({"writer"}), "cred-a", (
+        {"tenantId": "tenant-a", "actions": ["write"],
+         "resourceScopes": [{"resourceType": "CLIENT_ACCOUNT", "resourceIds": ["client-a"]}]},
+    ))
+    proxy = Principal("proxy-a", frozenset({"writer", "audit_proxy"}), "cred-p", (
+        {"tenantId": "tenant-a", "actions": ["write"],
+         "resourceScopes": [{"resourceType": "CLIENT_ACCOUNT", "resourceIds": ["client-a"]}]},
+    ))
+    repo = AuditLedgerRepository(db_session)
+    direct_record = repo.append_event(AuditEventCreate(**_event("client-a", "actor-a", "tenant-a")), direct)
+    proxy_event = AuditEventCreate(**dict(_event("client-a", "actor-b", "tenant-a"), delegationReason="approved"))
+    proxy_record = repo.append_event(proxy_event, proxy)
+    assert direct_record.attribution_mode == "DIRECT"
+    assert proxy_record.attribution_mode == "PROXY"
+    assert proxy_record.authenticated_subject == "proxy-a"
+
+
+def test_legacy_read_operations_require_global_auditor_and_mutations_are_denied(db_session, monkeypatch):
+    _configure_principals(monkeypatch)
+    from app.models.schemas import AuditEventCreate, QueryFilters
+    from app.security import Principal
+    from app.storage.database import AuditRecordEntity
+    from app.storage.repository import AuditLedgerRepository
+    from app.services.compliance import ComplianceService
+    from app.services.lifecycle import LifecycleAndExportService
+    writer = Principal("legacy", frozenset({"writer"}), "legacy", (), True)
+    repo = AuditLedgerRepository(db_session)
+    record = repo.append_event(AuditEventCreate(eventType="LEGACY", actorId="legacy", resourceType="CLIENT", resourceId="legacy-1", payload={"ssn": "secret"}, timestamp="2026-01-01T00:00:00Z"), writer)
+    restricted_reader = Principal("legacy-reader", frozenset({"reader", "exporter", "compliance_reviewer", "privacy_officer", "retention_admin"}), "reader", (), True)
+    operations = (
+        (lambda: repo.query_events(QueryFilters(resourceId="legacy-1"), principal=restricted_reader), HTTPException),
+        (lambda: LifecycleAndExportService.generate_verifiable_export(db_session, resource_id="legacy-1", principal=restricted_reader), HTTPException),
+        (lambda: ComplianceService.generate_client_access_audit_report(db_session, "legacy-1", principal=restricted_reader), HTTPException),
+        (lambda: LifecycleAndExportService.redact_record_fields(db_session, record.sequence_num, ["ssn"], "no", principal=restricted_reader), ValueError),
+        (lambda: LifecycleAndExportService.apply_retention_policy(db_session, 1, "no", principal=restricted_reader), HTTPException),
+    )
+    for operation, expected_type in operations:
+        with pytest.raises(expected_type) as exc:
+            operation()
+        if isinstance(exc.value, HTTPException):
+            assert exc.value.status_code == 403
+    assert db_session.query(AuditRecordEntity).count() == 1
+    auditor = Principal("auditor", frozenset({"global_auditor", "reader", "exporter", "compliance_reviewer"}), "auditor")
+    rows, total = repo.query_events(QueryFilters(resourceId="legacy-1"), principal=auditor)
+    assert total == 1 and len(rows) == 1
+
+
+def test_admin_and_proxy_require_delegation_for_v1_actor_substitution(client, monkeypatch):
+    _configure_principals(monkeypatch)
+    raw = json.loads(__import__("os").environ["AUDIT_API_KEYS"])
+    raw["admin-legacy"] = {"credentialId": "admin", "subject": "admin", "roles": ["admin", "writer"], "legacyAccess": True}
+    raw["proxy-legacy"] = {"credentialId": "proxy", "subject": "proxy", "roles": ["writer", "audit_proxy"], "legacyAccess": True}
+    monkeypatch.setenv("AUDIT_API_KEYS", json.dumps(raw)); _credentials.cache_clear()
+    event = {"eventType": "LEGACY", "actorId": "forged", "resourceType": "CLIENT", "resourceId": "legacy-1", "payload": {}, "timestamp": "2026-01-01T00:00:00Z"}
+    with _client("admin-legacy") as admin, _client("proxy-legacy") as proxy:
+        assert admin.post("/audit/events", json=event).status_code == 403
+        assert proxy.post("/audit/events", json=event).status_code == 403
+        event["delegationReason"] = "approved"
+        assert proxy.post("/audit/events", json=event).status_code == 201
+
+
+def test_legacy_pii_requires_dedicated_capability_for_compliance_and_export(db_session, monkeypatch):
+    _configure_principals(monkeypatch)
+    from app.models.schemas import AuditEventCreate
+    from app.models.compliance import ComplianceAuditReport
+    from app.security import Principal
+    from app.services.compliance import ComplianceService
+    from app.services.lifecycle import LifecycleAndExportService
+    from app.storage.database import AuditRecordEntity
+    from app.storage.repository import AuditLedgerRepository
+
+    writer = Principal("legacy", frozenset({"writer"}), "legacy-writer", (), True)
+    record = AuditLedgerRepository(db_session).append_event(
+        AuditEventCreate(
+            eventType="ACCOUNT_VIEWED",
+            actorId="legacy",
+            resourceType="CLIENT_ACCOUNT",
+            resourceId="legacy-client",
+            payload={"justification": "review", "ssn": "legacy-secret"},
+            timestamp="2026-01-01T00:00:00Z",
+        ),
+        writer,
+    )
+    before = (record.payload_json, record.content_hash, record.record_hash)
+
+    restricted = Principal(
+        "auditor", frozenset({"global_auditor", "exporter", "compliance_reviewer", "pii_reader"}),
+        "auditor", (), False, False, False,
+    )
+    denied_calls = (
+        lambda: ComplianceService.generate_client_access_audit_report(
+            db_session, "legacy-client", include_pii=True, principal=restricted,
+        ),
+        lambda: LifecycleAndExportService.generate_verifiable_export(
+            db_session, resource_id="legacy-client", include_pii=True, principal=restricted,
+        ),
+    )
+    for call in denied_calls:
+        with pytest.raises(HTTPException) as exc:
+            call()
+        assert exc.value.status_code == 403
+        assert "legacy-secret" not in str(exc.value.detail)
+
+    current = db_session.query(AuditRecordEntity).filter_by(sequence_num=record.sequence_num).one()
+    assert (current.payload_json, current.content_hash, current.record_hash) == before
+
+    authorized = Principal(
+        "auditor", frozenset({"global_auditor", "compliance_reviewer", "pii_reader"}),
+        "authorized-auditor", (), False, False, True,
+    )
+    report = ComplianceService.generate_client_access_audit_report(
+        db_session, "legacy-client", include_pii=True, principal=authorized,
+    )
+    assert isinstance(report, ComplianceAuditReport)
+    assert report.accessEvents[0]["payload"]["ssn"] == "legacy-secret"
 
 
 def test_query_requires_reader_role_even_with_tenant_grant(db_session, monkeypatch):
@@ -367,7 +507,7 @@ def test_legacy_access_without_reader_role_cannot_query_v1(db_session, monkeypat
     from app.security import Principal
     from app.storage.repository import AuditLedgerRepository
     repo = AuditLedgerRepository(db_session)
-    repo.append_event(AuditEventCreate(eventType="LEGACY", actorId="actor", resourceType="CLIENT", resourceId="legacy", payload={}, timestamp="2026-01-01T00:00:00Z"), Principal("writer", frozenset({"writer"}), "writer", (), True))
+    repo.append_event(AuditEventCreate(eventType="LEGACY", actorId="writer", resourceType="CLIENT", resourceId="legacy", payload={}, timestamp="2026-01-01T00:00:00Z"), Principal("writer", frozenset({"writer"}), "writer", (), True))
     with pytest.raises(Exception):
         repo.query_events(QueryFilters(resourceId="legacy"), principal=Principal("legacy", frozenset(), "legacy", (), True))
 
@@ -399,3 +539,112 @@ def test_redaction_denial_is_indistinguishable_and_preserves_rows_and_manifests(
     assert errors == [(ValueError, "Audit record not found"), (ValueError, "Audit record not found")]
     assert after == before
     assert LifecycleAndExportService.redact_record_fields(db_session, record.sequence_num, ["ssn"], "approved", principal=owner).sequenceNum == record.sequence_num
+
+
+def test_direct_denials_preserve_retention_and_export_state(db_session, monkeypatch):
+    _configure_principals(monkeypatch)
+    from app.models.schemas import AuditEventCreate
+    from app.security import Principal
+    from app.storage.database import AuditRecordEntity
+    from app.storage.repository import AuditLedgerRepository
+    from app.services.lifecycle import LifecycleAndExportService
+
+    owner = Principal("actor-a", frozenset({"writer", "exporter", "retention_admin"}), "cred-a", (
+        {"tenantId": "tenant-a", "actions": ["write", "export", "retain"],
+         "resourceScopes": [{"resourceType": "CLIENT_ACCOUNT", "resourceIds": ["client-a"]}]},
+    ))
+    foreign = Principal("actor-b", frozenset({"exporter", "retention_admin"}), "cred-b", (
+        {"tenantId": "tenant-b", "actions": ["export", "retain"],
+         "resourceScopes": [{"resourceType": "CLIENT_ACCOUNT", "resourceIds": ["client-b"]}]},
+    ))
+    record = AuditLedgerRepository(db_session).append_event(
+        AuditEventCreate(**dict(_event("client-a", "actor-a", "tenant-a"), timestamp="2020-01-01T00:00:00Z")), owner
+    )
+    before = [(r.sequence_num, r.payload_json, r.is_archived, r.archived_at, r.archival_reason)
+              for r in db_session.query(AuditRecordEntity).order_by(AuditRecordEntity.sequence_num).all()]
+    with pytest.raises(Exception):
+        LifecycleAndExportService.apply_retention_policy(
+            db_session, 1, "unauthorized", tenant_id="tenant-a", resource_id="client-a", principal=foreign
+        )
+    with pytest.raises(Exception):
+        LifecycleAndExportService.generate_verifiable_export(
+            db_session, resource_id="client-a", principal=foreign
+        )
+    after = [(r.sequence_num, r.payload_json, r.is_archived, r.archived_at, r.archival_reason)
+             for r in db_session.query(AuditRecordEntity).order_by(AuditRecordEntity.sequence_num).all()]
+    assert after == before
+
+
+def test_export_lifecycle_manifests_are_database_scoped_by_tenant(db_session, monkeypatch):
+    _configure_principals(monkeypatch)
+    from app.models.schemas import AuditEventCreate
+    from app.security import Principal
+    from app.storage.repository import AuditLedgerRepository
+    from app.services.lifecycle import LifecycleAndExportService
+
+    owner_a = Principal("actor-a", frozenset({"writer", "exporter", "privacy_officer"}), "cred-a", (
+        {"tenantId": "tenant-a", "actions": ["write", "export", "redact"],
+         "resourceScopes": [{"resourceType": "CLIENT_ACCOUNT", "resourceIds": ["client-a"]}]},
+    ))
+    owner_b = Principal("actor-b", frozenset({"writer", "exporter", "privacy_officer"}), "cred-b", (
+        {"tenantId": "tenant-b", "actions": ["write", "export", "redact"],
+         "resourceScopes": [{"resourceType": "CLIENT_ACCOUNT", "resourceIds": ["client-b"]}]},
+    ))
+    repo = AuditLedgerRepository(db_session)
+    record_a = repo.append_event(AuditEventCreate(**_event("client-a", "actor-a", "tenant-a")), owner_a)
+    record_b = repo.append_event(AuditEventCreate(**_event("client-b", "actor-b", "tenant-b")), owner_b)
+    LifecycleAndExportService.redact_record_fields(db_session, record_a.sequence_num, ["justification"], "a", owner_a)
+    LifecycleAndExportService.redact_record_fields(db_session, record_b.sequence_num, ["justification"], "b", owner_b)
+
+    bundle = LifecycleAndExportService.generate_verifiable_export(
+        db_session, resource_id="client-a", principal=owner_a
+    )
+    assert bundle.totalRecords == 1
+    assert {m["tenantId"] for m in bundle.integrityManifests} == {"tenant-a"}
+    assert all(m["payload"].get("redactedSequenceNum") == record_a.sequence_num for m in bundle.integrityManifests)
+
+
+def test_authenticated_actor_binding_cannot_be_replaced_by_request_actor(client, monkeypatch):
+    _configure_principals(monkeypatch)
+    with _client("writer-a") as writer:
+        response = writer.post("/audit/events", json=_event("client-a", "actor-b", "tenant-a"))
+    assert response.status_code == 403
+
+
+def test_compliance_unknown_or_foreign_selector_and_pii_are_denied(db_session, monkeypatch):
+    _configure_principals(monkeypatch)
+    from app.models.schemas import AuditEventCreate
+    from app.security import Principal
+    from app.storage.repository import AuditLedgerRepository
+    from app.services.compliance import ComplianceService
+
+    writer = Principal("actor-a", frozenset({"writer"}), "cred-a", (
+        {"tenantId": "tenant-a", "actions": ["write"],
+         "resourceScopes": [{"resourceType": "CLIENT_ACCOUNT", "resourceIds": ["client-a"]}]},
+    ))
+    reviewer = Principal("reviewer", frozenset({"compliance_reviewer"}), "cred-review", (
+        {"tenantId": "tenant-a", "actions": ["compliance"],
+         "resourceScopes": [{"resourceType": "CLIENT_ACCOUNT", "resourceIds": ["client-a"]}]},
+    ))
+    AuditLedgerRepository(db_session).append_event(
+        AuditEventCreate(**dict(_event("client-a", "actor-a", "tenant-a"), eventType="ACCOUNT_VIEWED",
+                                payload={"justification": "review", "ssn": "secret"})), writer
+    )
+    with pytest.raises(Exception):
+        ComplianceService.generate_client_access_audit_report(
+            db_session, "client-b", principal=reviewer
+        )
+    with pytest.raises(Exception):
+        ComplianceService.generate_client_access_audit_report(
+            db_session, "client-a", include_pii=True, principal=reviewer
+        )
+
+
+def test_tenant_query_counts_and_pagination_do_not_disclose_foreign_rows(client, monkeypatch):
+    _configure_principals(monkeypatch)
+    with _client("writer-a") as tenant_a, _client("writer-b") as tenant_b:
+        assert tenant_a.post("/audit/events", json=_event("client-a", "actor-a", "tenant-a")).status_code == 201
+        assert tenant_b.post("/audit/events", json=_event("client-b", "actor-b", "tenant-b")).status_code == 201
+        denied = tenant_a.get("/audit/events?resourceId=client-b&limit=1&offset=0")
+        assert denied.status_code in (403, 404)
+        assert "total" not in denied.json()

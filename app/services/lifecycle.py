@@ -160,7 +160,7 @@ class LifecycleAndExportService:
         ensure_ready()
         require_operation_role(principal, "redact")
         scope_predicates = []
-        if getattr(principal, "legacy_access", False):
+        if "global_auditor" in getattr(principal, "roles", ()):
             scope_predicates.append(AuditRecordEntity.protocol_version == 1)
         for grant in getattr(principal, "tenant_grants", ()):
             if grant.get("tenantId") is None:
@@ -289,13 +289,13 @@ class LifecycleAndExportService:
                 authorize(principal, "export", inferred[2], inferred[0], resource_id)
                 query = query.filter(AuditRecordEntity.tenant_id == inferred[2])
             else:
-                authorize_legacy(principal, "export")
+                authorize_legacy(principal, "export", include_pii=include_pii)
                 query = query.filter(AuditRecordEntity.protocol_version == 1)
         elif getattr(principal, "tenant_grants", ()):
             from app.authorization import deny
             deny("Tenant-scoped export requires a resource scope")
         else:
-            authorize_legacy(principal, "export")
+            authorize_legacy(principal, "export", include_pii=include_pii)
             query = query.filter(AuditRecordEntity.protocol_version == 1)
 
         records = query.order_by(AuditRecordEntity.sequence_num.asc()).all()
@@ -305,13 +305,23 @@ class LifecycleAndExportService:
             record["payload"] = LifecycleAndExportService._project_payload(record["payload"], include_pii)
         selected_sequences = {r.sequence_num for r in records}
         manifests = []
-        lifecycle_records = session.query(AuditRecordEntity).filter(
+        lifecycle_query = session.query(AuditRecordEntity).filter(
             AuditRecordEntity.event_type.in_(["AUDIT_RECORD_REDACTED", "AUDIT_RECORD_ARCHIVED"])
-        ).order_by(AuditRecordEntity.sequence_num.asc()).all()
-        if resource_id and resolve_tenant_by_id(resource_id):
-            lifecycle_records = [r for r in lifecycle_records if r.tenant_id == resolve_tenant_by_id(resource_id)[2]]
-        elif not resource_id:
-            lifecycle_records = [r for r in lifecycle_records if (r.protocol_version or 1) == 1]
+        )
+        # Apply the same authorization boundary to lifecycle evidence before
+        # loading rows.  Python-side filtering alone would still read unrelated
+        # tenant manifests through a direct service invocation.
+        if resource_id:
+            inferred_resource = resolve_tenant_by_id(resource_id)
+            if inferred_resource:
+                lifecycle_query = lifecycle_query.filter(
+                    AuditRecordEntity.tenant_id == inferred_resource[2]
+                )
+            else:
+                lifecycle_query = lifecycle_query.filter(AuditRecordEntity.protocol_version == 1)
+        else:
+            lifecycle_query = lifecycle_query.filter(AuditRecordEntity.protocol_version == 1)
+        lifecycle_records = lifecycle_query.order_by(AuditRecordEntity.sequence_num.asc()).all()
         for lifecycle_record in lifecycle_records:
             try:
                 payload = json.loads(lifecycle_record.payload_json)

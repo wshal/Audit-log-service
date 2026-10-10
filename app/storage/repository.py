@@ -38,6 +38,13 @@ class AuditLedgerRepository:
         if principal is None:
             from fastapi import HTTPException
             raise HTTPException(status_code=403, detail="Authenticated tenant scope is required")
+        actor_substituted = bool(getattr(event_in, "impersonatedActorId", None)) or event_in.actorId != principal.subject
+        if actor_substituted and (
+            "audit_proxy" not in getattr(principal, "roles", ())
+            or not getattr(event_in, "delegationReason", None)
+        ):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=403, detail="Explicit proxy delegation is required")
         if getattr(event_in, "tenantId", None):
             require_operation_role(principal, "write")
             authorize(principal, "write", event_in.tenantId, event_in.resourceType, event_in.resourceId)
@@ -159,11 +166,8 @@ class AuditLedgerRepository:
             authorize(principal, "read", tenant_id, filters.resourceType, filters.resourceId)
             query = self.session.query(AuditRecordEntity).filter(AuditRecordEntity.tenant_id == tenant_id)
         else:
-            if not getattr(principal, "legacy_access", False):
-                from fastapi import HTTPException
-                raise HTTPException(status_code=403, detail="A tenant or explicit legacy scope is required")
             authorize_legacy(principal, "read")
-            query = self.session.query(AuditRecordEntity)
+            query = self.session.query(AuditRecordEntity).filter(AuditRecordEntity.protocol_version == 1)
 
         if filters.actorId:
             query = query.filter(AuditRecordEntity.actor_id == filters.actorId)

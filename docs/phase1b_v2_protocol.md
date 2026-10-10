@@ -38,3 +38,23 @@ persisted, so leaving the token configured cannot authorize a later restart.
 The token is consumed before validation and the marker is removed only after
 successful preflight. Nested object and array PII fields are recursively
 projected unless the caller has `pii_reader`.
+
+Recovery consumption uses an exclusive file-create reservation (`O_CREAT |
+O_EXCL`) on the configured marker filesystem. This provides single-use
+semantics across processes sharing that filesystem. It does not provide a
+distributed multi-host lock when workers use different local or ephemeral
+volumes; production deployments must place the marker and reservation on a
+shared durable filesystem or provide an equivalent external lock.
+The consumed reservation must remain readable and well-formed before an
+outcome is recorded. Missing, malformed, unreadable, or failed outcome
+persistence is fail-closed: the quarantine marker is retained and the service
+does not become ready. Outcome updates use a same-directory temporary file,
+flush/fsync, atomic replacement, and directory fsync where supported. A
+filesystem that cannot durably flush directory entries is an explicit
+deployment limitation, not a successful recovery guarantee.
+Initial reservation creation applies the same file flush/fsync and containing
+directory fsync sequence before validation begins. Unsupported directory fsync
+is reported as an unsupported capability; actual open or fsync errors fail the
+attempt and retain quarantine. Process-interruption tests cover exits before
+outcome persistence and after outcome persistence but before marker removal;
+both restart paths remain quarantined and cannot reuse the consumed token.

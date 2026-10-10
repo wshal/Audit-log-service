@@ -61,7 +61,7 @@ class ComplianceService:
         if tenant_id:
             authorize(principal, "compliance", tenant_id, "CLIENT_ACCOUNT", client_id)
         else:
-            authorize_legacy(principal, "compliance")
+            authorize_legacy(principal, "compliance", include_pii=include_pii)
         if from_time:
             from_time = normalize_iso8601(from_time)
         if to_time:

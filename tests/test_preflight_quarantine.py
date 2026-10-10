@@ -2,8 +2,20 @@
 
 import pytest
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+import os
+import subprocess
+import sys
+import json
+import hashlib
 from fastapi.testclient import TestClient
 from sqlalchemy import text
+
+
+def _set_recovery_token(monkeypatch, token):
+    monkeypatch.setenv("AUDIT_QUARANTINE_RECOVERY_TOKEN", token)
+    monkeypatch.setenv("AUDIT_QUARANTINE_RECOVERY_TOKEN_DIGEST", hashlib.sha256(token.encode()).hexdigest())
 
 import app.main as main_module
 from app.crypto.hasher import GENESIS_PREV_HASH
@@ -68,7 +80,7 @@ def test_quarantine_persists_until_operator_recovery(isolated_test_application, 
     # Operator repairs/restores the database, then explicitly authorizes recovery.
     session = isolated_test_application["session_factory"]()
     session.query(AuditRecordEntity).delete(); session.commit(); session.close()
-    monkeypatch.setenv("AUDIT_QUARANTINE_RECOVERY_TOKEN", "one-time-token")
+    _set_recovery_token(monkeypatch, "one-time-token")
     with TestClient(main_module.app) as client:
         assert client.get("/ready").status_code == 200
 
@@ -134,7 +146,7 @@ def test_recovery_token_is_consumed_and_does_not_repeat(isolated_test_applicatio
         assert client.get("/ready").status_code == 503
     session = isolated_test_application["session_factory"]()
     session.query(AuditRecordEntity).delete(); session.commit(); session.close()
-    monkeypatch.setenv("AUDIT_QUARANTINE_RECOVERY_TOKEN", "one-time-token")
+    _set_recovery_token(monkeypatch, "one-time-token")
     with TestClient(main_module.app) as client:
         assert client.get("/ready").status_code == 200
     with TestClient(main_module.app) as client:
@@ -154,7 +166,6 @@ def test_preflight_verifier_exception_fails_closed(isolated_test_application, mo
     assert main_module.app is not None
     assert main_module.health_check()["status"] == "quarantined"
 
-
 def test_preflight_marker_write_failure_stays_quarantined(isolated_test_application, monkeypatch):
     session = isolated_test_application["session_factory"]()
     _record(session, payload_json="not-json")
@@ -162,8 +173,6 @@ def test_preflight_marker_write_failure_stays_quarantined(isolated_test_applicat
     monkeypatch.setattr(main_module, "_persist_marker", lambda reason: (_ for _ in ()).throw(OSError("read-only fs")))
     assert main_module.run_integrity_preflight() is False
     assert main_module.health_check()["status"] == "quarantined"
-
-
 def test_preflight_marker_read_and_session_failures_stay_quarantined(isolated_test_application, monkeypatch):
     class BrokenMarker:
         def exists(self):
@@ -194,3 +203,267 @@ def test_preflight_preserves_historical_rows(isolated_test_application):
               r.tenant_id, r.prev_hash) for r in session.query(AuditRecordEntity).all()]
     session.close()
     assert after == before
+
+
+def test_recovery_token_concurrent_consumption_is_single_use(isolated_test_application, monkeypatch):
+    marker = Path(isolated_test_application["engine"].url.database).with_name("concurrent-quarantine.flag")
+    marker.write_text("quarantined\n", encoding="utf-8")
+    monkeypatch.setenv("AUDIT_QUARANTINE_MARKER", str(marker))
+    _set_recovery_token(monkeypatch, "concurrent-token")
+    consumed = marker.with_name(marker.name + ".recovery-consumed")
+    barrier = Barrier(2)
+    original_exists = Path.exists
+
+    def synchronized_exists(path):
+        if path == consumed:
+            barrier.wait(timeout=5)
+        return original_exists(path)
+
+    monkeypatch.setattr(Path, "exists", synchronized_exists)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _: main_module._consume_recovery_token(), range(2)))
+    assert results.count(True) == 1
+    assert results.count(False) == 1
+
+
+def test_recovery_token_single_use_across_processes(isolated_test_application):
+    marker = Path(isolated_test_application["engine"].url.database).with_name("process-quarantine.flag")
+    env = os.environ.copy()
+    env["AUDIT_QUARANTINE_MARKER"] = str(marker)
+    env["AUDIT_QUARANTINE_RECOVERY_TOKEN"] = "process-token"
+    env["AUDIT_QUARANTINE_RECOVERY_TOKEN_DIGEST"] = hashlib.sha256(b"process-token").hexdigest()
+    command = "from app.main import _consume_recovery_token; print(_consume_recovery_token())"
+    processes = [
+        subprocess.Popen([sys.executable, "-c", command], cwd=str(Path(__file__).parents[1]), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        for _ in range(2)
+    ]
+    outputs = [process.communicate(timeout=10)[0].strip() for process in processes]
+    assert sorted(outputs) == ["False", "True"]
+
+
+def test_recovery_reservation_persistence_failure_consumes_token(isolated_test_application, monkeypatch):
+    marker = Path(isolated_test_application["engine"].url.database).with_name("persistence-quarantine.flag")
+    marker.write_text("quarantined\n", encoding="utf-8")
+    monkeypatch.setenv("AUDIT_QUARANTINE_MARKER", str(marker))
+    _set_recovery_token(monkeypatch, "persistence-token")
+    original_fdopen = main_module.os.fdopen
+
+    def fail_fdopen(*args, **kwargs):
+        raise OSError("persistence unavailable")
+
+    monkeypatch.setattr(main_module.os, "fdopen", fail_fdopen)
+    with pytest.raises(OSError):
+        main_module._consume_recovery_token()
+    assert marker.with_name(marker.name + ".recovery-consumed").exists()
+    monkeypatch.setattr(main_module.os, "fdopen", original_fdopen)
+    assert main_module._consume_recovery_token() is False
+
+
+def test_failed_recovery_cannot_reuse_token_after_database_repair(isolated_test_application, monkeypatch):
+    marker = Path(isolated_test_application["engine"].url.database).with_name("failed-recovery.flag")
+    marker.write_text("quarantined\n", encoding="utf-8")
+    monkeypatch.setenv("AUDIT_QUARANTINE_MARKER", str(marker))
+    _set_recovery_token(monkeypatch, "failed-token")
+    monkeypatch.setattr(main_module, "SessionLocal", lambda: (_ for _ in ()).throw(OSError("database unavailable")))
+    assert main_module.run_integrity_preflight() is False
+    monkeypatch.setattr(main_module, "SessionLocal", isolated_test_application["session_factory"])
+    # Even after the database dependency is restored, the same token cannot
+    # authorize another attempt because its reservation is already durable.
+    assert main_module.run_integrity_preflight() is False
+
+
+def test_missing_recovery_reservation_cannot_clear_marker(isolated_test_application, monkeypatch):
+    marker = Path(isolated_test_application["engine"].url.database).with_name("missing-reservation.flag")
+    marker.write_text("quarantined\n", encoding="utf-8")
+    monkeypatch.setenv("AUDIT_QUARANTINE_MARKER", str(marker))
+    _set_recovery_token(monkeypatch, "missing-reservation-token")
+    monkeypatch.setattr(main_module, "_consume_recovery_token", lambda: True)
+
+    assert main_module.run_integrity_preflight() is False
+    assert marker.exists()
+    assert main_module.health_check()["status"] == "quarantined"
+
+# End of quarantine recovery regression coverage.
+
+def test_malformed_recovery_reservation_fails_closed(isolated_test_application, monkeypatch):
+    marker = Path(isolated_test_application["engine"].url.database).with_name("malformed-reservation.flag")
+    marker.write_text("quarantined\n", encoding="utf-8")
+    monkeypatch.setenv("AUDIT_QUARANTINE_MARKER", str(marker))
+    reservation = marker.with_name(marker.name + ".recovery-consumed")
+    reservation.write_text("not-json\n", encoding="utf-8")
+    with pytest.raises(json.JSONDecodeError):
+        main_module._record_recovery_outcome("successful")
+    assert marker.exists()
+
+
+def test_unreadable_recovery_reservation_fails_closed(isolated_test_application, monkeypatch):
+    marker = Path(isolated_test_application["engine"].url.database).with_name("unreadable-reservation.flag")
+    reservation = marker.with_name(marker.name + ".recovery-consumed")
+    reservation.write_text('{"tokenHash":"abc","outcome":"attempted"}\n', encoding="utf-8")
+    monkeypatch.setenv("AUDIT_QUARANTINE_MARKER", str(marker))
+    monkeypatch.setattr(Path, "read_text", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("read failed")))
+    with pytest.raises(OSError):
+        main_module._record_recovery_outcome("successful")
+
+
+def test_successful_reservation_flushes_containing_directory(isolated_test_application, monkeypatch):
+    marker = Path(isolated_test_application["engine"].url.database).with_name("durable-reservation.flag")
+    monkeypatch.setenv("AUDIT_QUARANTINE_MARKER", str(marker))
+    _set_recovery_token(monkeypatch, "durable-reservation-token")
+    calls = []
+    monkeypatch.setattr(main_module, "_fsync_directory", lambda path: calls.append(path) or True)
+
+    assert main_module._consume_recovery_token() is True
+    assert calls == [marker.parent]
+    assert marker.with_name(marker.name + ".recovery-consumed").exists()
+
+
+def test_reservation_directory_fsync_failure_fails_closed(isolated_test_application, monkeypatch):
+    marker = Path(isolated_test_application["engine"].url.database).with_name("reservation-fsync-failure.flag")
+    marker.write_text("quarantined\n", encoding="utf-8")
+    monkeypatch.setenv("AUDIT_QUARANTINE_MARKER", str(marker))
+    _set_recovery_token(monkeypatch, "reservation-fsync-token")
+    main_module.set_state("quarantined")
+    monkeypatch.setattr(main_module, "_fsync_directory", lambda path: (_ for _ in ()).throw(OSError("directory fsync failed")))
+
+    with pytest.raises(OSError):
+        main_module._consume_recovery_token()
+    assert marker.exists()
+    assert main_module.health_check()["status"] == "quarantined"
+    assert main_module._consume_recovery_token() is False
+
+
+def test_preflight_directory_fsync_failure_retains_quarantine_and_blocks_ready(
+    isolated_test_application, monkeypatch
+):
+    marker = Path(isolated_test_application["engine"].url.database).with_name("preflight-reservation-fsync.flag")
+    marker.write_text("quarantined\n", encoding="utf-8")
+    monkeypatch.setenv("AUDIT_QUARANTINE_MARKER", str(marker))
+    _set_recovery_token(monkeypatch, "preflight-reservation-fsync-token")
+    monkeypatch.setattr(
+        main_module,
+        "_fsync_directory",
+        lambda path: (_ for _ in ()).throw(OSError("reservation directory fsync failed")),
+    )
+    main_module.set_state("quarantined")
+
+    assert main_module.run_integrity_preflight() is False
+    assert marker.exists()
+    assert main_module.health_check()["status"] == "quarantined"
+    with TestClient(main_module.app) as client:
+        assert client.get("/ready").status_code == 503
+    reservation = marker.with_name(marker.name + ".recovery-consumed")
+    assert reservation.exists()
+    assert main_module._consume_recovery_token() is False
+
+
+def test_preflight_malformed_reservation_fails_closed(isolated_test_application, monkeypatch):
+    marker = Path(isolated_test_application["engine"].url.database).with_name("preflight-malformed.flag")
+    marker.write_text("quarantined\n", encoding="utf-8")
+    reservation = marker.with_name(marker.name + ".recovery-consumed")
+    reservation.write_text("not-json\n", encoding="utf-8")
+    monkeypatch.setenv("AUDIT_QUARANTINE_MARKER", str(marker))
+    _set_recovery_token(monkeypatch, "preflight-malformed-token")
+    monkeypatch.setattr(main_module, "_consume_recovery_token", lambda: True)
+
+    assert main_module.run_integrity_preflight() is False
+    assert marker.exists()
+    assert main_module.health_check()["status"] == "quarantined"
+
+
+def test_preflight_unreadable_reservation_fails_closed(isolated_test_application, monkeypatch):
+    marker = Path(isolated_test_application["engine"].url.database).with_name("preflight-unreadable.flag")
+    marker.write_text("quarantined\n", encoding="utf-8")
+    reservation = marker.with_name(marker.name + ".recovery-consumed")
+    reservation.write_text('{"tokenHash":"abc","outcome":"attempted"}\n', encoding="utf-8")
+    monkeypatch.setenv("AUDIT_QUARANTINE_MARKER", str(marker))
+    _set_recovery_token(monkeypatch, "preflight-unreadable-token")
+    monkeypatch.setattr(main_module, "_consume_recovery_token", lambda: True)
+    monkeypatch.setattr(Path, "read_text", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("read failed")))
+
+    assert main_module.run_integrity_preflight() is False
+    assert marker.exists()
+    assert main_module.health_check()["status"] == "quarantined"
+
+
+def test_restart_after_interruption_before_outcome_cannot_reuse_token(isolated_test_application, monkeypatch):
+    marker = Path(isolated_test_application["engine"].url.database).with_name("crash-before-outcome.flag")
+    marker.write_text("quarantined\n", encoding="utf-8")
+    monkeypatch.setenv("AUDIT_QUARANTINE_MARKER", str(marker))
+    _set_recovery_token(monkeypatch, "crash-before-outcome-token")
+    env = os.environ.copy()
+    env["AUDIT_QUARANTINE_MARKER"] = str(marker)
+    env["AUDIT_QUARANTINE_RECOVERY_TOKEN_DIGEST"] = hashlib.sha256(b"crash-before-outcome-token").hexdigest()
+    main_module.set_state("quarantined")
+    command = "from app.main import _consume_recovery_token; import os; _consume_recovery_token(); os._exit(0)"
+    process = subprocess.run([sys.executable, "-c", command], cwd=str(Path(__file__).parents[1]), env=env, timeout=10)
+    assert process.returncode == 0
+    assert main_module.run_integrity_preflight() is False
+    assert marker.exists()
+
+
+def test_restart_after_outcome_before_marker_removal_cannot_reuse_token(isolated_test_application, monkeypatch):
+    marker = Path(isolated_test_application["engine"].url.database).with_name("crash-before-unlink.flag")
+    marker.write_text("quarantined\n", encoding="utf-8")
+    monkeypatch.setenv("AUDIT_QUARANTINE_MARKER", str(marker))
+    _set_recovery_token(monkeypatch, "crash-before-unlink-token")
+    env = os.environ.copy()
+    env["AUDIT_QUARANTINE_MARKER"] = str(marker)
+    env["AUDIT_QUARANTINE_RECOVERY_TOKEN_DIGEST"] = hashlib.sha256(b"crash-before-unlink-token").hexdigest()
+    main_module.set_state("quarantined")
+    command = "from app.main import _consume_recovery_token, _record_recovery_outcome; import os; _consume_recovery_token(); _record_recovery_outcome('successful'); os._exit(0)"
+    process = subprocess.run([sys.executable, "-c", command], cwd=str(Path(__file__).parents[1]), env=env, timeout=10)
+    assert process.returncode == 0
+    assert main_module.run_integrity_preflight() is False
+    assert marker.exists()
+
+
+@pytest.mark.parametrize("failure", ["write", "replace", "file_fsync", "directory_fsync"])
+def test_recovery_outcome_persistence_failures_raise_and_preserve_reservation(
+    isolated_test_application, monkeypatch, failure
+):
+    marker = Path(isolated_test_application["engine"].url.database).with_name(f"outcome-{failure}.flag")
+    reservation = marker.with_name(marker.name + ".recovery-consumed")
+    reservation.write_text('{"tokenHash":"abc","outcome":"attempted"}\n', encoding="utf-8")
+    monkeypatch.setenv("AUDIT_QUARANTINE_MARKER", str(marker))
+    if failure == "write":
+        monkeypatch.setattr(main_module.os, "fdopen", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("write failed")))
+    elif failure == "replace":
+        monkeypatch.setattr(main_module.os, "replace", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("replace failed")))
+    elif failure == "file_fsync":
+        monkeypatch.setattr(main_module.os, "fsync", lambda fd: (_ for _ in ()).throw(OSError("fsync failed")))
+    else:
+        monkeypatch.setattr(main_module, "_fsync_directory", lambda path: (_ for _ in ()).throw(OSError("directory fsync failed")))
+    with pytest.raises(OSError):
+        main_module._record_recovery_outcome("successful")
+    assert reservation.exists()
+
+
+def test_failed_outcome_persistence_never_removes_quarantine_marker(isolated_test_application, monkeypatch):
+    marker = Path(isolated_test_application["engine"].url.database).with_name("outcome-marker.flag")
+    marker.write_text("quarantined\n", encoding="utf-8")
+    monkeypatch.setenv("AUDIT_QUARANTINE_MARKER", str(marker))
+    _set_recovery_token(monkeypatch, "outcome-marker-token")
+    monkeypatch.setattr(main_module, "_consume_recovery_token", lambda: True)
+    monkeypatch.setattr(main_module, "_record_recovery_outcome", lambda outcome: (_ for _ in ()).throw(OSError("outcome unavailable")))
+
+    assert main_module.run_integrity_preflight() is False
+    assert marker.exists()
+    assert main_module.health_check()["status"] == "quarantined"
+
+
+def test_marker_removal_failure_keeps_service_quarantined(isolated_test_application, monkeypatch):
+    marker = Path(isolated_test_application["engine"].url.database).with_name("unlink-marker.flag")
+    marker.write_text("quarantined\n", encoding="utf-8")
+    reservation = marker.with_name(marker.name + ".recovery-consumed")
+    reservation.write_text('{"tokenHash":"abc","outcome":"attempted"}\n', encoding="utf-8")
+    monkeypatch.setenv("AUDIT_QUARANTINE_MARKER", str(marker))
+    _set_recovery_token(monkeypatch, "unlink-marker-token")
+    monkeypatch.setattr(main_module, "_consume_recovery_token", lambda: True)
+    monkeypatch.setattr(Path, "unlink", lambda self: (_ for _ in ()).throw(OSError("unlink failed")))
+
+    assert main_module.run_integrity_preflight() is False
+    assert marker.exists()
+    assert main_module.health_check()["status"] == "quarantined"
+
+# End of quarantine recovery regression coverage.

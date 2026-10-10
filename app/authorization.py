@@ -48,9 +48,28 @@ def deny(detail: str = "Not authorized for this resource") -> None:
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
 
 
-def authorize_legacy(principal: Principal, action: str) -> None:
-    if principal is None or not principal.legacy_access:
+def authorize_legacy(principal: Principal, action: str, *, include_pii: bool = False) -> None:
+    """Authorize an operation against the immutable V1 legacy epoch.
+
+    Legacy reads are global-auditor-only.  V1 writes are a separate explicit
+    capability retained for compatibility with the migration/ingestion path.
+    V1 lifecycle mutation is intentionally unsupported by this service.
+    """
+    if principal is None:
         deny("Legacy ledger access requires an explicit legacy grant")
+    if action in {"read", "export", "compliance"}:
+        if "global_auditor" not in principal.roles:
+            deny("Global legacy-auditor capability is required")
+        if include_pii and not getattr(principal, "legacy_pii_reader", False):
+            deny("Legacy PII access requires an explicit legacy PII capability")
+        return
+    if action == "write":
+        if not getattr(principal, "legacy_write", False) and not getattr(principal, "legacy_access", False):
+            deny("Explicit legacy-write capability is required")
+        return
+    if action in {"redact", "retain"} and "global_auditor" in principal.roles:
+        return
+    deny("Legacy records are immutable to tenant-scoped principals")
 
 
 def require_operation_role(principal: Principal, action: str, *, include_pii: bool = False) -> None:

@@ -54,23 +54,15 @@ def append_audit_event(
         if resource_tenant != tenant_id:
             raise HTTPException(status_code=403, detail="Unknown or foreign resource")
         authorize(principal, "write", tenant_id, event_in.resourceType, event_in.resourceId)
-        if event_in.impersonatedActorId or (event_in.actorId != principal.subject and "audit_proxy" in principal.roles):
+        if event_in.impersonatedActorId or event_in.actorId != principal.subject:
             if "audit_proxy" not in principal.roles or not event_in.delegationReason:
                 raise HTTPException(status_code=403, detail="Explicit proxy delegation is required")
             event_in = event_in.model_copy(update={"actorId": event_in.impersonatedActorId or event_in.actorId})
-        elif event_in.actorId != principal.subject:
-            raise HTTPException(status_code=403, detail="actorId must match the authenticated subject")
-    elif (
-        "admin" not in principal.roles
-        and "audit_proxy" not in principal.roles
-        and event_in.actorId != principal.subject
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="actorId must match the authenticated subject unless the caller has audit_proxy role",
-        )
-    else:
-        from app.authorization import authorize_legacy
+    elif event_in.impersonatedActorId or event_in.actorId != principal.subject:
+        if "audit_proxy" not in principal.roles or not event_in.delegationReason:
+            raise HTTPException(status_code=403, detail="Explicit proxy delegation is required")
+    from app.authorization import authorize_legacy
+    if not tenant_id:
         authorize_legacy(principal, "write")
     repo = AuditLedgerRepository(db)
     record = repo.append_event(event_in, principal)
@@ -129,9 +121,9 @@ def query_audit_events(
         # Ambiguous unrestricted list queries fail closed; this prevents counts from leaking.
         raise HTTPException(status_code=403, detail="A tenant-scoped resource filter is required")
     else:
-        if "admin" in principal.roles:
+        if "global_auditor" in principal.roles:
             authorize_legacy(principal, "read")
-        elif not principal.legacy_access:
+        else:
             # Preserve the historical role-only empty-list contract without
             # disclosing legacy rows, counts, or pagination metadata.
             return PaginatedAuditResponse(total=0, limit=limit, offset=offset, items=[])

@@ -18,6 +18,11 @@ class Principal:
     credential_id: str = ""
     tenant_grants: tuple[dict, ...] = ()
     legacy_access: bool = False
+    # `legacy_access` is retained as a compatibility alias for the narrowly
+    # scoped V1-write grant used by existing deployments.  It is not a read,
+    # export, compliance, redaction, or retention grant.
+    legacy_write: bool = False
+    legacy_pii_reader: bool = False
 
 
 @lru_cache(maxsize=1)
@@ -33,6 +38,8 @@ def _credentials() -> dict[str, Principal]:
                     value.get("credentialId", key),
                     tuple(value.get("tenantGrants", ())),
                     bool(value.get("legacyAccess", False)),
+                    bool(value.get("legacyWrite", value.get("legacyAccess", False))),
+                    bool(value.get("legacyPiiReader", False)),
                 )
                 for key, value in parsed.items()
             }
@@ -40,7 +47,7 @@ def _credentials() -> dict[str, Principal]:
             raise RuntimeError("AUDIT_API_KEYS must be JSON mapping API key to {subject, roles}") from exc
     if os.getenv("AUDIT_ENV", "development").lower() == "production":
         raise RuntimeError("AUDIT_API_KEYS is required in production")
-    return {"development-only-audit-key": Principal("local-development", frozenset({"admin", "global_auditor", "reader", "writer", "exporter", "privacy_officer", "retention_admin", "compliance_reviewer", "pii_reader"}), "development", (), True)}
+    return {"development-only-audit-key": Principal("local-development", frozenset({"admin", "global_auditor", "reader", "writer", "exporter", "privacy_officer", "retention_admin", "compliance_reviewer", "pii_reader", "audit_proxy"}), "development", (), True, True, True)}
 
 
 def authenticated_principal(api_key: str | None = Security(api_key_header)) -> Principal:

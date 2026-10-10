@@ -18,6 +18,7 @@ def test_redacted_record_mutation_is_detected(client, db_session):
             "eventType": "CLIENT_CREATED", "actorId": "advisor-7",
             "resourceType": "CLIENT", "resourceId": "client-7",
             "payload": {"name": "Ava", "ssn": "123-45-6789"},
+            "delegationReason": "integrity fixture ingestion",
             "timestamp": "2026-10-07T12:00:00Z",
         },
     )
@@ -48,6 +49,7 @@ def test_redaction_rejects_unknown_or_duplicate_fields(client):
             "eventType": "CLIENT_CREATED", "actorId": "advisor-7",
             "resourceType": "CLIENT", "resourceId": "client-7",
             "payload": {"ssn": "123-45-6789"},
+            "delegationReason": "integrity fixture ingestion",
             "timestamp": "2026-10-07T12:00:00Z",
         },
     )
@@ -79,14 +81,14 @@ def test_timestamps_are_normalized_and_invalid_ranges_are_rejected(client):
         "/audit/events",
         json={
             "eventType": "LOGIN", "actorId": "user", "resourceType": "SESSION", "resourceId": "1",
-            "payload": {}, "timestamp": "2026-10-07T12:00:00+05:30",
+            "payload": {}, "delegationReason": "integrity fixture ingestion", "timestamp": "2026-10-07T12:00:00+05:30",
         },
     )
     assert response.status_code == 201
     assert response.json()["timestamp"] == "2026-10-07T06:30:00Z"
     server_timestamp = client.post(
         "/audit/events",
-        json={"eventType": "LOGIN", "actorId": "user", "resourceType": "SESSION", "resourceId": "2", "payload": {}},
+        json={"eventType": "LOGIN", "actorId": "user", "resourceType": "SESSION", "resourceId": "2", "payload": {}, "delegationReason": "integrity fixture ingestion"},
     ).json()["timestamp"]
     assert server_timestamp.endswith("Z")
     assert client.get("/audit/events?fromTime=2026-10-08T00:00:00Z&toTime=2026-10-07T00:00:00Z").status_code == 422
@@ -105,8 +107,8 @@ def test_sqlite_append_serializes_competing_writers(tmp_path):
         try:
             return AuditLedgerRepository(session).append_event(AuditEventCreate(
                 eventType="CONCURRENT_WRITE", actorId=str(index), resourceType="TEST",
-                resourceId=str(index), payload={}, timestamp="2026-10-07T00:00:00Z",
-            ), Principal("concurrency", frozenset({"writer"}), "concurrency", (), True)).sequence_num
+                resourceId=str(index), payload={}, delegationReason="integrity fixture ingestion", timestamp="2026-10-07T00:00:00Z",
+            ), Principal(str(index), frozenset({"writer"}), "concurrency", (), True)).sequence_num
         finally:
             session.close()
 

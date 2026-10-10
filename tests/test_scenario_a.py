@@ -17,6 +17,7 @@ def test_write_and_chain_linkage(client):
             "resourceType": "SESSION",
             "resourceId": "sess-abc",
             "payload": {"ip": "192.168.1.1", "device": "MacBook"},
+            "delegationReason": "scenario fixture ingestion",
             "timestamp": "2026-10-07T10:00:00Z",
         },
     )
@@ -35,6 +36,7 @@ def test_write_and_chain_linkage(client):
             "resourceType": "ACCOUNT",
             "resourceId": "acc-999",
             "payload": {"action": "email_change", "new_email": "alice@schwab.com"},
+            "delegationReason": "scenario fixture ingestion",
             "timestamp": "2026-10-07T10:05:00Z",
         },
     )
@@ -54,10 +56,10 @@ def test_write_and_chain_linkage(client):
 
 def test_query_filtering(client):
     events = [
-        {"eventType": "LOGIN", "actorId": "alice", "resourceType": "AUTH", "resourceId": "1", "timestamp": "2026-10-07T10:00:00Z"},
-        {"eventType": "TRADE", "actorId": "alice", "resourceType": "ORDER", "resourceId": "100", "timestamp": "2026-10-07T10:10:00Z"},
-        {"eventType": "LOGIN", "actorId": "bob", "resourceType": "AUTH", "resourceId": "2", "timestamp": "2026-10-07T10:15:00Z"},
-        {"eventType": "TRANSFER", "actorId": "bob", "resourceType": "ACCOUNT", "resourceId": "200", "timestamp": "2026-10-07T10:20:00Z"},
+        {"eventType": "LOGIN", "actorId": "alice", "resourceType": "AUTH", "resourceId": "1", "delegationReason": "scenario fixture ingestion", "timestamp": "2026-10-07T10:00:00Z"},
+        {"eventType": "TRADE", "actorId": "alice", "resourceType": "ORDER", "resourceId": "100", "delegationReason": "scenario fixture ingestion", "timestamp": "2026-10-07T10:10:00Z"},
+        {"eventType": "LOGIN", "actorId": "bob", "resourceType": "AUTH", "resourceId": "2", "delegationReason": "scenario fixture ingestion", "timestamp": "2026-10-07T10:15:00Z"},
+        {"eventType": "TRANSFER", "actorId": "bob", "resourceType": "ACCOUNT", "resourceId": "200", "delegationReason": "scenario fixture ingestion", "timestamp": "2026-10-07T10:20:00Z"},
     ]
     for e in events:
         client.post("/audit/events", json=e)
@@ -88,8 +90,8 @@ def test_tamper_detection_direct_content_mutation(client, db_session):
     Directly modifies SQLite payload column to simulate malicious storage tampering.
     GET /audit/verify must detect CONTENT_HASH_MISMATCH.
     """
-    client.post("/audit/events", json={"eventType": "TRANSFER", "actorId": "eve", "resourceType": "ACCOUNT", "resourceId": "9", "payload": {"amount": 500}, "timestamp": "2026-10-07T10:00:00Z"})
-    client.post("/audit/events", json={"eventType": "TRANSFER", "actorId": "eve", "resourceType": "ACCOUNT", "resourceId": "9", "payload": {"amount": 1000}, "timestamp": "2026-10-07T10:01:00Z"})
+    client.post("/audit/events", json={"eventType": "TRANSFER", "actorId": "eve", "resourceType": "ACCOUNT", "resourceId": "9", "payload": {"amount": 500}, "delegationReason": "scenario fixture ingestion", "timestamp": "2026-10-07T10:00:00Z"})
+    client.post("/audit/events", json={"eventType": "TRANSFER", "actorId": "eve", "resourceType": "ACCOUNT", "resourceId": "9", "payload": {"amount": 1000}, "delegationReason": "scenario fixture ingestion", "timestamp": "2026-10-07T10:01:00Z"})
 
     # Intact initially
     assert client.get("/audit/verify").json()["intact"] is True
@@ -112,9 +114,9 @@ def test_tamper_detection_record_deletion(client, db_session):
     """
     Directly deletes a record in SQLite to simulate malicious truncation/deletion.
     """
-    client.post("/audit/events", json={"eventType": "EVENT_A", "actorId": "u1", "resourceType": "R", "resourceId": "1", "timestamp": "2026-10-07T10:00:00Z"})
-    client.post("/audit/events", json={"eventType": "EVENT_B", "actorId": "u1", "resourceType": "R", "resourceId": "1", "timestamp": "2026-10-07T10:01:00Z"})
-    client.post("/audit/events", json={"eventType": "EVENT_C", "actorId": "u1", "resourceType": "R", "resourceId": "1", "timestamp": "2026-10-07T10:02:00Z"})
+    client.post("/audit/events", json={"eventType": "EVENT_A", "actorId": "u1", "resourceType": "R", "resourceId": "1", "delegationReason": "scenario fixture ingestion", "timestamp": "2026-10-07T10:00:00Z"})
+    client.post("/audit/events", json={"eventType": "EVENT_B", "actorId": "u1", "resourceType": "R", "resourceId": "1", "delegationReason": "scenario fixture ingestion", "timestamp": "2026-10-07T10:01:00Z"})
+    client.post("/audit/events", json={"eventType": "EVENT_C", "actorId": "u1", "resourceType": "R", "resourceId": "1", "delegationReason": "scenario fixture ingestion", "timestamp": "2026-10-07T10:02:00Z"})
 
     rec2 = db_session.query(AuditRecordEntity).filter_by(sequence_num=2).first()
     db_session.delete(rec2)

@@ -18,6 +18,7 @@ def test_retention_policy_archival_and_chain_intact(client):
             "resourceType": "AUTH",
             "resourceId": "sess-1",
             "payload": {"ip": "10.0.0.1"},
+            "delegationReason": "scenario fixture ingestion",
             "timestamp": old_time,
         },
     )
@@ -29,6 +30,7 @@ def test_retention_policy_archival_and_chain_intact(client):
             "resourceType": "ORDER",
             "resourceId": "ord-2",
             "payload": {"symbol": "SCHW", "qty": 50},
+            "delegationReason": "scenario fixture ingestion",
             "timestamp": recent_time,
         },
     )
@@ -64,6 +66,7 @@ def test_structured_redaction_preserves_chain(client):
                 "bankAccount": "9876543210",
                 "riskTolerance": "Moderate",
             },
+            "delegationReason": "scenario fixture ingestion",
             "timestamp": "2026-10-07T12:00:00Z",
         },
     )
@@ -108,6 +111,7 @@ def test_verifiable_export_bundle(client):
                 "resourceType": "PORTFOLIO",
                 "resourceId": f"port-{i}",
                 "payload": {"index": i},
+                "delegationReason": "scenario fixture ingestion",
                 "timestamp": f"2026-10-07T10:0{i}:00Z",
             },
         )
