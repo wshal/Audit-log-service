@@ -2,7 +2,8 @@
 Cryptographic module for tamper-evident audit log chaining.
 
 Guarantees:
-1. RFC 8785 canonical JSON serialization (deterministic sorting, compact delimiters, no trailing spaces).
+1. A deterministic project-specific JSON representation (sorted keys, compact delimiters, no trailing spaces).
+   This is not a complete RFC 8785 / JSON Canonicalization Scheme implementation.
 2. SHA-256 cryptographic hashing.
 3. Salted field-level commitments for structured redaction without breaking hash chain validation.
 """
@@ -16,10 +17,14 @@ GENESIS_PREV_HASH = "0" * 64
 
 def canonical_json(data: Any) -> str:
     """
-    Produces deterministic, canonical JSON representation according to RFC 8785 principles:
+    Produces the project's historical deterministic JSON representation:
     - Dict keys sorted lexicographically
     - No unnecessary whitespace separators (',', ':')
     - UTF-8 compatible
+
+    Numeric serialization follows Python's ``json.dumps`` behavior. This is
+    intentionally compatibility-preserving and must not be described as full
+    RFC 8785 conformance without a versioned protocol migration.
     """
     return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 

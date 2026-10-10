@@ -1,7 +1,10 @@
 # Requirements-to-test matrix
 
-This matrix is maintained with the test suite. The current suite runs against
-isolated SQLite databases; it does not provide PostgreSQL integration evidence.
+This matrix is maintained with the test suite. The default suite runs against
+isolated SQLite databases, while the separately selectable PostgreSQL
+integration suite lives under `tests/postgres`. Gate 3 recorded a successful
+PostgreSQL CI workflow and `postgres-integration` job; detailed CI test counts
+were not independently available in this review.
 
 | ID | Requirement | Evidence | Status |
 |---|---|---|---|
@@ -14,7 +17,13 @@ isolated SQLite databases; it does not provide PostgreSQL integration evidence.
 | AUTH-07 | Quarantine blocks reads and mutations; readiness remains unavailable | `tests/test_preflight_quarantine.py::test_direct_entry_points_fail_closed_while_quarantined`, `test_preflight_directory_fsync_failure_retains_quarantine_and_blocks_ready`, `test_marker_removal_failure_keeps_service_quarantined` | Tested and verified |
 | AUTH-08 | Recovery persistence, single-use reservation, restart, and failure handling | `tests/test_preflight_quarantine.py::test_recovery_token_concurrent_consumption_is_single_use`, `test_recovery_token_single_use_across_processes`, `test_restart_after_interruption_before_outcome_cannot_reuse_token`, `test_restart_after_outcome_before_marker_removal_cannot_reuse_token`, parametrized outcome-persistence failures | Tested and verified within the documented filesystem boundary |
 | CFG-01 | Malformed authentication and resource-registry configuration fails closed | `tests/test_security_controls.py::test_malformed_api_key_configuration_fails_closed`, `test_malformed_resource_registry_fails_closed` | Tested and verified |
-| DB-01 | PostgreSQL concurrency and integration behavior | No PostgreSQL test environment or test module exists | Not tested |
+| DB-01 | PostgreSQL migration, constraints, allocator concurrency, and rollback | `tests/postgres/test_migrations.py`, `tests/postgres/test_concurrency.py`; [Gate 3 workflow](https://github.com/wshal/Audit-log-service/actions/runs/38090070659) and [postgres-integration job](https://github.com/wshal/Audit-log-service/actions/runs/38090070659/job/114324520174) | Executed in the recorded CI job; exact CI counts were not independently confirmed |
+
+Latest local default validation is **136 passed, 7 skipped**. All seven local
+skips are PostgreSQL database-backed cases because PostgreSQL/Docker was not
+available locally. The recorded CI run provides real PostgreSQL execution
+evidence; local SQLite results and CI results are intentionally reported
+separately.
 
 Coverage is measured with `pytest-cov` using line and branch instrumentation. The
 85% combined gate is intentionally below the measured baseline to leave room for

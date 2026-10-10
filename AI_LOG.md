@@ -245,3 +245,188 @@ This document records the traceability of AI assistance throughout the developme
 - **Threshold rationale**: The CI gate is **85% combined coverage**, below the measured baseline to allow platform-dependent startup/error branches while preventing material regression. Branch coverage is reported separately and is not represented as PostgreSQL or distributed-system evidence.
 - **Final validation**: `python -m pytest -q` => **93 passed**, one existing Starlette/httpx deprecation warning. Coverage command with line and branch instrumentation => **91.08% line**, **78.76% branch**, **88.27% combined**, and the configured **85% combined gate passed**. `python -m compileall -q app tests` and `git diff --check` both exited successfully.
 - **Limitations**: Coverage and tests use isolated SQLite only; no PostgreSQL integration, distributed deployment, or Prompt 2B recovery redesign is included. GitHub Actions has not been executed in this local environment; its commands match the validated local coverage and compile commands.
+
+### Entry 22: Establish versioned migrations and ledger-state schema
+- **Date**: 2026-10-11
+- **Intent**: Add the first database-correctness foundation without changing append allocation, retries, idempotency, authorization, or recovery behavior.
+- **Engineer Decision**: **Implemented the migration/schema slice only; allocator work remains deferred.**
+  - Added Alembic configuration, environment, and revision `0001_schema_foundation`.
+  - Fresh databases use the versioned baseline; recognized pre-migration SQLite schemas receive additive columns/tables only.
+  - Unrecognized existing schemas fail before migration state is stamped, preserving the existing database for operator review.
+  - Added `ledger_state` with singleton, sequence, tip-hash, and state-version constraints. No state row is backfilled and no append path reads it yet.
+  - Existing audit rows, payload bytes, hashes, signatures, sequence values, and transition evidence are not rewritten or deleted.
+  - Added focused fresh-schema, repeat-migration, constraint, and incompatible-schema tests.
+- **Validation**: Focused migration and legacy-compatibility tests (`.venv\\Scripts\\python -m pytest tests/test_database_migrations.py tests/test_phase1b_migration.py -q`) **8 passed**. Full suite (`.venv\\Scripts\\python -m pytest -q`) **100 passed** with the existing Starlette/httpx deprecation warning. `python -m compileall -q app tests` and `git diff --check` exited successfully. Alembic configuration warnings were removed by setting `path_separator = os`.
+- **Limitations**: PostgreSQL execution is not verified because no PostgreSQL service/driver test environment is available. Unified allocator, PostgreSQL row locking, retries, and idempotency remain for later Prompt 3 stages.
+
+### Entry 23: Close migration-safety validation gaps
+- **Date**: 2026-10-11
+- **Intent**: Address the independent review findings before any allocator work.
+- **Changes**:
+  - Added portable SQLAlchemy type-family, nullability, default, primary-key, uniqueness, and ledger-state check validation for recognized schemas.
+  - Revalidated already-stamped `0001_schema_foundation` databases and rejected unknown revisions or incomplete stamped tables.
+  - Rejected non-empty databases without the recognized audit baseline instead of treating them as fresh installations.
+  - Added isolated tests for valid/malformed stamped schemas, unknown revisions, unknown non-empty databases, malformed intermediate columns, and retry state.
+  - Extended mixed V1/V2 preservation coverage to invoke the real `ChainVerificationService` after migration.
+- **Validation**: Migration and legacy regression tests **13 passed**; full suite **105 passed** with the existing Starlette/httpx deprecation warning. Compileall and `git diff --check` passed.
+- **Limitations**: Validation and migration execution remain SQLite-only. PostgreSQL DDL/type reflection and concurrent allocator behavior are not claimed or tested.
+
+### Entry 24: Complete migration-safety test evidence
+- **Date**: 2026-10-11
+- **Intent**: Close the remaining evidence gaps identified during independent migration review without changing allocator or concurrency behavior.
+- **Changes**:
+  - Extended interrupted SQLite migration coverage to inspect the actual additive column, reflected type/nullability, required tables, unstamped revision, historical integrity fields, and final retry schema.
+  - Added stamped-schema tests for incorrect type, incorrect nullability, and missing ledger-state tip-hash constraint.
+  - Preserved the malformed-intermediate-schema rejection test and valid stamped-schema test.
+- **Validation**: Migration and legacy regression tests **16 passed**; full suite **108 passed** with the existing Starlette/httpx deprecation warning. Compileall and `git diff --check` passed.
+- **Limitations**: All evidence remains SQLite-only. PostgreSQL reflection, DDL failure behavior, and PostgreSQL constraint semantics still require a real PostgreSQL environment.
+
+### Entry 25: Activate the unified ledger-state allocator
+- **Date**: 2026-10-11
+- **Intent**: Introduce database-level sequence and chain-tip serialization while preserving the existing hash and event formats.
+- **Changes**:
+  - Added shared ledger-state locking and initialization in `AuditLedgerRepository`.
+  - SQLite retains `BEGIN IMMEDIATE`; PostgreSQL uses singleton-row insertion and `FOR UPDATE` locking.
+  - Normal appends and lifecycle journal appends now allocate from `ledger_state` and advance it in the same transaction.
+  - Populated ledgers are derived only when sequence/previous-hash continuity is consistent; mismatches fail closed.
+  - Added tests for empty and populated initialization, state mismatch rejection, failed append atomicity, state advancement, and existing concurrent writers.
+- **Validation**: Full suite **114 passed** with the existing Starlette/httpx deprecation warning. Compileall and `git diff --check` passed.
+- **Limitations**: PostgreSQL execution, row-lock behavior, and independent multi-instance concurrency remain unverified. Blind retries and idempotency remain deferred.
+
+### Entry 26: Close allocator lock and state-trust review findings
+- **Date**: 2026-10-11
+- **Intent**: Correct the remaining Prompt 3B2 allocator issues without starting retries, idempotency, or unrelated database work.
+- **Changes**:
+  - Rejected allocator calls that arrive with pending ORM writes, preventing a caller from bypassing SQLite `BEGIN IMMEDIATE`; read-only inspection transactions are rolled back before lock acquisition, while callers must close any Core-SQL transaction first.
+  - Added rollback/lock-marker cleanup when state validation rejects a missing or inconsistent populated ledger, preventing leaked SQLite writer locks after a failed append.
+  - Removed ordinary append/lifecycle state derivation as a recovery mechanism. Populated ledgers with missing state now fail closed and require explicit startup initialization; empty ledgers may initialize the singleton state.
+  - Required lifecycle journal appends to hold the shared allocator lock and to advance `ledger_state` in the same transaction.
+  - Strengthened the concurrent-writer regression to assert record count, contiguous unique sequences, previous-hash links, and successful real global-ledger verification; added direct lock-boundary tests.
+- **Validation**: Focused integrity/authorization tests (`.venv\\Scripts\\python -m pytest tests/test_integrity_regressions.py tests/test_tenant_authorization.py -q`) **48 passed** with the existing Starlette/httpx deprecation warning. Full suite (`.venv\\Scripts\\python -m pytest -q`) **117 passed** with the same warning. `python -m compileall -q app tests` and `git diff --check` also exited successfully.
+- **Limitations**: The concurrency evidence uses threads against one SQLite file; PostgreSQL row-lock behavior and independent multi-process/multi-instance execution remain unverified. The allocator validates sequence/previous-hash state consistency, while full content/signature verification remains the explicit startup preflight responsibility. Retries and idempotency remain deferred.
+
+### Entry 27: Enforce allocator ownership and lifecycle failure cleanup
+- **Date**: 2026-10-11
+- **Intent**: Resolve the independent Prompt 3B2 review findings without adding retries, idempotency, or PostgreSQL implementation.
+- **Changes**:
+  - Allocator acquisition now rejects every pre-existing SQLAlchemy transaction, including read-only and Core-SQL transactions, without committing or rolling it back. Callers must explicitly end caller-owned work before allocation.
+  - Added lifecycle failure cleanup covering lookup, mutation, journal construction/signing, flush, and commit exceptions. A failed retention/redaction operation rolls back its transaction and clears the allocator lock marker before re-raising.
+  - Constructed redaction results before commit so successful lifecycle calls do not reopen an implicit read transaction while returning expired ORM fields.
+  - Added regression coverage for caller-owned ORM/Core transactions, lifecycle signing failure, rollback/state preservation, marker cleanup, and subsequent same-session reuse.
+- **Validation**: Focused integrity/authorization tests **51 passed**; migration plus tenant tests **38 passed**; full suite **120 passed**, each with the existing Starlette/httpx deprecation warning. Compileall and `git diff --check` passed.
+- **Limitations**: PostgreSQL execution, separate-process/multi-instance concurrency, and retry/idempotency remain unverified or deferred. The strict ownership contract requires all callers to explicitly end any transaction before append or lifecycle mutation.
+
+### Entry 28: Complete append cleanup and fail-safe rollback handling
+- **Date**: 2026-10-11
+- **Intent**: Close the remaining allocator/lifecycle cleanup findings without adding retries or idempotency.
+- **Changes**:
+  - Added common append failure cleanup for every exception after allocator ownership, including unexpected flush and commit exceptions. Rollback is attempted, the ownership marker is always released, and rollback failure invalidates the session while preserving the original exception.
+  - Lifecycle cleanup now uses the same helper, including rollback-failure invalidation; a failed session cannot perform a subsequent allocation until recreated.
+  - Replaced the Core-SQL DDL fixture with a real `UPDATE ledger_state` mutation whose caller transaction remains active and caller-owned after allocator rejection.
+  - Added append flush/commit failure tests, append rollback-failure tests, lifecycle flush/commit failure tests, lifecycle rollback-failure tests, and same-session stale-ownership assertions.
+- **Validation**: Focused integrity/authorization tests **57 passed**; migration plus tenant tests **41 passed**; full suite **126 passed**, each with the existing Starlette/httpx deprecation warning. Compileall and `git diff --check` passed.
+- **Limitations**: A database commit exception can leave the external commit outcome ambiguous; the implementation deliberately does not retry. PostgreSQL execution and independent-process/multi-instance concurrency remain unverified.
+
+### Entry 29: Establish PostgreSQL migration integration infrastructure
+- **Date**: 2026-10-11
+- **Intent**: Implement Gate 1 only: provide a reproducible PostgreSQL 16 environment and verify the existing Alembic migration without changing allocator, authorization, retry, or idempotency behavior.
+- **Changes**:
+  - Added optional `requirements-postgres.txt` with psycopg 3.
+  - Added disposable `docker-compose.postgres.yml` with health checking and ephemeral storage.
+  - Added isolated `tests/postgres/` fixtures that reject non-local hosts and non-`audit_test` databases, reset only the isolated public schema, run the actual Alembic configuration, inspect PostgreSQL constraints/indexes/nullability, verify the migration head, repeatability, and empty-ledger initialization.
+  - Added a GitHub Actions PostgreSQL 16 service job that waits for health, installs the optional driver, and runs the integration tests.
+- **Validation**: SQLite/default validation remains unchanged. PostgreSQL integration execution depends on Docker/PostgreSQL availability and is reported separately; no PostgreSQL service was assumed or claimed to pass unless actually run.
+- **Limitations**: This gate does not implement concurrent allocator tests, independent application processes, retries, idempotency keys, or PostgreSQL lifecycle/append failure testing. Those remain unverified and out of scope.
+
+### Entry 30: Tighten PostgreSQL Gate 1 evidence
+- **Date**: 2026-10-11
+- **Intent**: Address the independent Gate 1 review findings without changing production allocator or authorization behavior.
+- **Changes**:
+  - Restricted the PostgreSQL test URL guard to the declared `postgresql+psycopg` driver and added URL-only tests for accepted, unsupported, non-local, and non-test targets.
+  - Changed the integration engine fixture to reset the guarded `audit_test` schema per test.
+  - Added direct PostgreSQL DML assertions for singleton, duplicate singleton, sequence, tip-hash, state-version, and audit-record sequence uniqueness constraints.
+- **Validation**: PostgreSQL URL tests passed; PostgreSQL integration tests collected **6 passed, 4 skipped** because Docker/PostgreSQL is unavailable locally. The full default suite completed with **132 passed, 4 skipped** and the existing Starlette/httpx deprecation warning. Compileall and `git diff --check` exited successfully; no PostgreSQL execution is claimed.
+- **Limitations**: Runtime PostgreSQL migration and constraint enforcement remain unverified until Docker or a real PostgreSQL service is available. Concurrent PostgreSQL allocator behavior remains out of scope.
+
+### Entry 31: Add PostgreSQL concurrency and transaction correctness evidence
+- **Date**: 2026-10-11
+- **Intent**: Implement Gate 2 tests using the existing database allocator and transaction boundaries, without adding retries, idempotency, or an alternate allocation path.
+- **Changes**:
+  - Added bounded independent-process PostgreSQL append coverage asserting serialized contiguous sequences, consistent previous-hash links, and final ledger-state tip/sequence values.
+  - Added PostgreSQL append flush-failure coverage proving rollback and same-session reuse.
+  - Added PostgreSQL lifecycle journal failure coverage with a persisted before/after snapshot of records, integrity/attribution fields, transitions, archive metadata, and ledger state; the same session remains reusable afterward.
+  - Documented the Gate 2 scope and its real-PostgreSQL execution boundary.
+- **Validation**: `tests/postgres` collected **6 passed, 7 skipped** locally; the seven database-backed tests were skipped because Docker/PostgreSQL is unavailable. The full suite completed with **132 passed, 7 skipped** and the existing Starlette/httpx deprecation warning. Compileall and `git diff --check` passed.
+- **Limitations**: PostgreSQL concurrency and transaction behavior remain unverified locally and must execute in CI against PostgreSQL 16. Worker cleanup is bounded and forcibly terminates any process still alive after the cleanup deadline; this is test-process containment, not a production recovery guarantee. Commit-outcome recovery, retries, idempotency, and multi-host storage behavior remain outside this gate.
+
+### Entry 32: Enforce PostgreSQL worker exit-status validation
+- **Date**: 2026-10-11
+- **Intent**: Close the remaining Gate 2 test-evidence gap without modifying production behavior.
+- **Changes**: The bounded process concurrency test now records each worker index and explicitly rejects any started worker whose exit status is nonzero or unavailable, even if it published a queue result. Existing timeout, exception, ledger-integrity, and lifecycle rollback assertions are preserved.
+- **Validation**: PostgreSQL test collection completed with **6 passed, 7 skipped** locally; the seven database-backed tests remain skipped because Docker/PostgreSQL is unavailable. The full suite completed with **132 passed, 7 skipped** and the existing Starlette/httpx deprecation warning. Compileall and `git diff --check` passed.
+- **Limitations**: Real PostgreSQL concurrency and transaction behavior remain unverified locally and require CI execution against PostgreSQL 16.
+
+### Entry 33: Diagnose PostgreSQL Gate 2 CI failures
+- **Date**: 2026-10-11
+- **Intent**: Correct the PostgreSQL-specific constraint reflection and concurrent-test readiness setup without weakening integrity or allocator behavior.
+- **Findings and changes**:
+  - PostgreSQL reflects the correctly named `tip_hash` check with dialect-specific casts/parentheses. Validation and the integration assertion now use stable constraint identity plus semantic function/column/length checks; invalid-DML enforcement remains covered.
+  - Spawned repository workers began with process-local readiness state `uninitialized`, causing `ensure_ready()` to return HTTP 503 before allocation. The test now runs explicit empty-ledger initialization in the parent and establishes the child readiness precondition before calling the repository directly.
+- **Validation**: PostgreSQL test collection completed with **6 passed, 7 skipped** locally; Docker/PostgreSQL is unavailable. SQLite migration/integrity tests passed **32**; full suite passed **132** with **7 skipped** and the existing Starlette/httpx deprecation warning. Compileall and `git diff --check` passed.
+- **Limitations**: Real PostgreSQL migration, constraint, and concurrency execution remains unverified locally and must be confirmed by CI against PostgreSQL 16.
+
+### Entry 34: Correct PostgreSQL singleton-lock contention and reflection portability
+- **Date**: 2026-10-11
+- **Intent**: Remediate the reported PostgreSQL Gate 2 failure without reducing concurrency or weakening readiness/integrity checks.
+- **Changes**:
+  - PostgreSQL allocator access now locks an existing `ledger_state` singleton with `SELECT ... FOR UPDATE` before any initialization upsert, avoiding conflicting tuple-lock upgrades under concurrent writers. Conflict-safe insertion remains only for the genuinely absent-row initialization race.
+  - The concurrent test explicitly initializes the empty ledger and establishes readiness in each spawned direct-service worker; production `ensure_ready()` remains unchanged.
+  - Cross-dialect ledger check validation and reflected `tip_hash` assertions remain semantic/name-based while invalid-DML enforcement is retained.
+- **Validation**: SQLite migration/integrity tests passed **32**; full suite passed **132** with **7 skipped** and the existing Starlette/httpx warning. Compileall and `git diff --check` passed. Real PostgreSQL execution remains pending CI.
+- **Limitations**: The supplied CI excerpt showed cleanup SIGTERM (`-15`) rather than an underlying worker traceback; the lock-ordering fix is based on the current allocator path and must be confirmed by the real PostgreSQL job.
+
+### Entry 35: Preserve PostgreSQL worker failures and bound successful cleanup
+- **Date**: 2026-10-11
+- **Intent**: Correct the concurrency-test harness after CI reported only synthetic `-15` cleanup exits.
+- **Changes**:
+  - Worker failures now include the child traceback, rather than only an exception representation.
+  - Successful queue results are followed by bounded natural process joins; workers are no longer terminated merely because they are finishing cleanup after publishing a result.
+  - On an actual worker/timeout failure, bounded termination and kill cleanup run without replacing the original failure with cleanup exit codes.
+- **Validation**: PostgreSQL collection locally: **6 passed, 7 skipped**; full suite: **132 passed, 7 skipped**; compileall and `git diff --check` passed. No PostgreSQL server was available locally.
+- **Limitations**: The real CI database run is still required to determine whether any underlying PostgreSQL allocator error remains after the harness correction.
+
+### Entry 36: PostgreSQL Gate 2 CI verification
+- **Date**: 2026-10-11
+- **CI run**: [GitHub Actions run 38088656823](https://github.com/wshal/Audit-log-service/actions/runs/38088656823)
+- **Reported result**: Passed. The PostgreSQL integration workflow completed successfully, including the database migration/constraint and independent-process concurrency coverage for Gate 2. This result was reported from the CI run by the repository operator; the run page was not independently fetchable from this environment.
+- **Local comparison**: The local environment still has no PostgreSQL service; PostgreSQL collection remains **6 passed, 7 skipped**, while the default suite remains **132 passed, 7 skipped**.
+
+### Entry 37: Bind verification to persisted ledger state
+- **Date**: 2026-10-11
+- **Intent**: Close a Gate 3 integrity gap where verification walked records and signatures but did not validate an existing allocator tip/sequence state.
+- **Changes**:
+  - `ChainVerificationService.verify_ledger()` now compares an existing `ledger_state` singleton with the verified record count and final record hash, returning a failed verification on mismatch.
+  - A missing state row remains tolerated during explicit legacy startup initialization; `initialize_ledger_state()` still derives and persists the state only after record verification.
+  - Added a regression test that tampers with `ledger_state.tip_hash` and asserts verification failure without changing the existing signature-specific failure ordering.
+- **Validation**: Full default suite **133 passed, 7 skipped**, with the existing Starlette/httpx warning; compileall and `git diff --check` passed. PostgreSQL CI behavior was not rerun for this Gate 3 change.
+- **Limitations**: Gate 3 still requires independent review of canonicalization, key rotation, nested redaction semantics, export proofs, and real PostgreSQL regression execution.
+
+### Entry 38: Constrain initialization verification and document canonical JSON compatibility
+- **Date**: 2026-10-11
+- **Intent**: Remediate the Gate 3 verification-boundary and unsupported RFC 8785 claim findings without rewriting historical hashes.
+- **Changes**:
+  - Added a private initialization-only verification token/path used exclusively by `initialize_ledger_state()` to validate populated history before deriving a missing singleton. Ordinary verification now fails closed when populated records have no persisted state; empty-ledger behavior remains unchanged.
+  - Reclassified `canonical_json()` as the project's historical Python `json.dumps`-based deterministic format, removed the RFC 8785 compatibility claim, and pinned representative numeric serialization outputs in compatibility tests. No serializer behavior or historical hashes changed.
+  - Updated migration and authorization tests to initialize state explicitly before ordinary full-ledger verification where that was the intended setup.
+- **Validation**: Focused verification/migration/integrity/canonicalization set **49 passed**; full suite **136 passed, 7 skipped**; compileall and `git diff --check` passed. PostgreSQL was not rerun locally.
+
+### Entry 39: Record initialization verifier trust boundary
+- **Date**: 2026-10-11
+- **Design assumption**: The initialization-only verifier path is a trusted internal Python boundary used by `initialize_ledger_state()`. It is not an isolated capability that is inaccessible to every direct Python caller; ordinary HTTP/API callers cannot invoke it. This remains a known assumption unless a later security review identifies a concrete bypass.
+
+### Entry 40: Gate 3 PostgreSQL CI verification
+- **Date**: 2026-10-11
+- **Workflow run**: [GitHub Actions run 38090070659](https://github.com/wshal/Audit-log-service/actions/runs/38090070659)
+- **PostgreSQL job**: [postgres-integration job 114324520174](https://github.com/wshal/Audit-log-service/actions/runs/38090070659/job/114324520174)
+- **Observed result**: Both the overall workflow and `postgres-integration` job passed. This is the first recorded real PostgreSQL execution for the Gate 3 checkpoint `a663d68`.
+- **Local comparison**: Local validation remained **136 passed, 7 skipped** because PostgreSQL was unavailable locally; the CI run supplies the PostgreSQL integration evidence.
