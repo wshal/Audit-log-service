@@ -394,3 +394,9 @@ This document records the traceability of AI assistance throughout the developme
   - On an actual worker/timeout failure, bounded termination and kill cleanup run without replacing the original failure with cleanup exit codes.
 - **Validation**: PostgreSQL collection locally: **6 passed, 7 skipped**; full suite: **132 passed, 7 skipped**; compileall and `git diff --check` passed. No PostgreSQL server was available locally.
 - **Limitations**: The real CI database run is still required to determine whether any underlying PostgreSQL allocator error remains after the harness correction.
+
+### Entry 36: PostgreSQL Gate 2 CI verification
+- **Date**: 2026-10-11
+- **CI run**: [GitHub Actions run 38088656823](https://github.com/wshal/Audit-log-service/actions/runs/38088656823)
+- **Reported result**: Passed. The PostgreSQL integration workflow completed successfully, including the database migration/constraint and independent-process concurrency coverage for Gate 2. This result was reported from the CI run by the repository operator; the run page was not independently fetchable from this environment.
+- **Local comparison**: The local environment still has no PostgreSQL service; PostgreSQL collection remains **6 passed, 7 skipped**, while the default suite remains **132 passed, 7 skipped**.
