@@ -80,4 +80,9 @@ Stop the service with `Ctrl+C`, then run:
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-Expected: `22 passed`. The combined flow is `test_end_to_end_ideal_workflow` in `tests/test_security_controls.py`.
+Expected: `51 passed` (plus one dependency deprecation warning). The combined flow is `test_end_to_end_ideal_workflow` in `tests/test_security_controls.py`; tenant authorization coverage is in `tests/test_tenant_authorization.py`, and startup quarantine/direct-entry/recovery coverage is in `tests/test_preflight_quarantine.py`.
+
+If startup is quarantined after repair, set a unique one-time token in
+`AUDIT_QUARANTINE_RECOVERY_TOKEN` for one process start. The token hash and
+outcome are persisted beside the marker and cannot be reused. Remove the
+variable after the attempt; a failed attempt remains quarantined.

@@ -37,7 +37,18 @@ This submission implements a working **Tamper-Evident Audit Log Service prototyp
 
 ## 4. Verification and Quality Sign-Off
 
-- **Unit & Integration Tests**: 22 automated tests covering core append, multi-field filtering, direct DB tamper detection, record deletion detection, retention archival, structured redaction, signed export, regulatory compliance reports, post-redaction mutation, invalid lifecycle input, timestamp validation, concurrent SQLite appends, API-key/RBAC enforcement, actor-identity binding, signature forgery, lifecycle witnesses, key persistence, and the full Scenario A/B/C workflow.
-- **Test Results**: All 8 tests passing (`pytest -v`).
-- **Clean Git History**: Structured commits reflecting continuous development from design to delivery.
+- **Unit & Integration Tests**: 55 automated tests covering core append, multi-field filtering, direct DB tamper detection, record deletion detection, tenant/resource authorization, scoped lifecycle operations, recursive PII projection, V2 attribution and transition tampering, migration idempotency, signing-failure rollback, startup integrity preflight/quarantine/recovery, direct-entry quarantine guards, marker/recovery failure paths, historical immutability, retention archival, structured redaction, signed export, regulatory compliance reports, post-redaction mutation, invalid lifecycle input, timestamp validation, concurrent SQLite appends, API-key/RBAC enforcement, actor-identity binding, signature forgery, lifecycle witnesses, key persistence, and the full Scenario A/B/C workflow.
+- **Test Results**: `\.venv\Scripts\python.exe -m pytest -q` completed with **55 passed** and one dependency deprecation warning.
+- **Git History**: Review and commit state are maintained by the repository owner; this working tree contains the reviewed implementation diff.
 - **Attestation**: Formally verified in `ATTESTATION.md`.
+
+## 5. Phase 1B Authorization and Integrity Remediation
+
+The `security/tenant-authorization-p0` branch adds explicit tenant/resource grants,
+legacy access capability checks, repository/service authorization scopes, PII
+projection, positive scoped lifecycle behavior, V2 attribution-bound hashing,
+signed V1/V2 transition evidence, atomic first-V2 persistence, and additive
+legacy migration tests. Historical V1 records are not rewritten or assigned
+tenants. The V1/V2 physical table and global sequence remain a documented
+trade-off; independently retained checkpoints are still required to detect
+valid signed tail truncation.

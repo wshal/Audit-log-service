@@ -39,4 +39,26 @@ The new signature and manifest checks intentionally reject records written by th
 
 ## Validation run
 
-`\.venv\Scripts\python.exe -m pytest -q` completed successfully: **22 passed**.
+`\.venv\Scripts\python.exe -m pytest -q` completed successfully: **33 passed** (one dependency deprecation warning).
+
+## Phase 1B remediation status
+
+The follow-up authorization and integrity review closed the confirmed admin/object
+scope bypasses, added repository/service authorization contexts, introduced PII
+projection and positive tenant-scoped lifecycle tests, bound V2 attribution fields
+into the integrity envelope, validated signed transition metadata against actual
+V1 state, made initial V2/transition persistence atomic, and added additive
+existing-schema migration coverage. V1 history remains unchanged.
+
+Remaining documented boundaries are the shared physical V1/V2 table/global
+sequence, the need for an external checkpoint to detect valid signed tail
+truncation, limited nested PII classification, and lack of startup quarantine for
+inconsistent legacy data.
+
+Phase 1B Step 4 subsequently implemented the startup preflight and quarantine:
+schema migration is followed by read-only verification; malformed or inconsistent
+legacy/mixed data persists a quarantine marker, blocks `/audit/*` and readiness,
+and requires a consumed one-time recovery token after repair; persistent token
+configuration cannot repeat recovery. Nested PII projection is now recursive
+for objects and arrays. The remaining external-checkpoint and shared-sequence
+limitations are unchanged.

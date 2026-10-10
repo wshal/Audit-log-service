@@ -75,6 +75,22 @@ graph LR
 - `record_hash`: 64-character SHA-256 block hash.
 - `is_archived`, `archived_at`, `archival_reason`: Soft-deletion / retention flags.
 - `redaction_metadata_json`: Cryptographic commitment receipts for redacted fields.
+- `tenant_id`, `authenticated_subject`, `credential_id`, `attribution_mode`, `delegation_reason`, `protocol_version`: nullable legacy/V2 authorization and attribution fields. V1 rows remain unchanged and unknown legacy ownership is not inferred.
+
+### Startup integrity and quarantine
+
+After additive schema migration, the application performs a read-only full-ledger
+preflight using the existing V1/V2 verifier. State transitions are
+`uninitialized` -> `validating` -> `healthy` or `quarantined`. In quarantine,
+`/health` exposes only minimal status, `/ready` returns `503`, and every
+`/audit/*` route returns `503`; liveness remains available for diagnostics. A
+quarantine marker is atomically replaced and persists across restart on the
+configured local filesystem. It is cleared only after a repaired/restored
+database passes preflight and a one-time `AUDIT_QUARANTINE_RECOVERY_TOKEN` has
+been consumed; a persistent token cannot silently authorize repeated recovery.
+Marker durability is bounded by the filesystem (directory fsync is best-effort).
+No historical row or hash is rewritten automatically. Valid signed tail
+truncation remains undetectable without an external trusted checkpoint.
 
 ---
 
@@ -106,7 +122,7 @@ graph LR
 ## 5. Live Defense Preparation Guide
 
 When walking through your code live with the Schwab review panel:
-1. **Run Test Suite**: `pytest -v` runs all 8 unit and integration tests across Scenarios A, B, and C.
+1. **Run Test Suite**: `\.venv\Scripts\python.exe -m pytest -q` runs the current unit and integration suite across Scenarios A, B, C, authorization, migration, and integrity controls.
 2. **Start Interactive Server**: `uvicorn app.main:app --reload --port 8000`. Show the interactive documentation at `http://localhost:8000/docs`.
 3. **Demonstrate Tampering Live**:
    - Write 3 events via `/audit/events`.
