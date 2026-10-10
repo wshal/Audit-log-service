@@ -1,12 +1,15 @@
 """End-to-end tests for authentication, signatures, export, and lifecycle integrity."""
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.crypto.signer import _private_key, public_key_b64, public_key_ring, verify_record_signature
 from app.crypto.hasher import compute_event_content_hash, compute_record_chain_hash
+from app.authorization import clear_authorization_caches, resource_registry
 from app.main import app
 from app.models.schemas import ViolationType
 from app.security import _credentials
+from app.security import authenticated_principal
 from app.storage.database import AuditRecordEntity
 
 
@@ -23,6 +26,26 @@ def test_api_key_is_required():
     with TestClient(app) as anonymous:
         response = anonymous.get("/audit/verify")
     assert response.status_code == 401
+
+
+def test_malformed_api_key_configuration_fails_closed(monkeypatch):
+    monkeypatch.setenv("AUDIT_API_KEYS", "not-json")
+    _credentials.cache_clear()
+    try:
+        with pytest.raises(RuntimeError, match="AUDIT_API_KEYS must be JSON"):
+            authenticated_principal("any-key")
+    finally:
+        _credentials.cache_clear()
+
+
+def test_malformed_resource_registry_fails_closed(monkeypatch):
+    monkeypatch.setenv("AUDIT_RESOURCE_OWNERSHIP", "not-json")
+    clear_authorization_caches()
+    try:
+        with pytest.raises(RuntimeError, match="AUDIT_RESOURCE_OWNERSHIP must be JSON"):
+            resource_registry()
+    finally:
+        clear_authorization_caches()
 
 
 def test_development_signing_key_survives_cache_reset(tmp_path, monkeypatch):
