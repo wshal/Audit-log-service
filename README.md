@@ -126,8 +126,10 @@ python -m pytest -q
 python -m pytest -q --cov=app --cov-branch --cov-report=term-missing --cov-fail-under=85
 python -m compileall -q app tests
 ```
-The current suite contains **93 automated tests** (including configuration
-failure regressions). They validate:
+The current local suite contains **136 passed, 7 skipped** tests (including
+configuration failure regressions). The seven skips are PostgreSQL
+database-backed tests because PostgreSQL/Docker was unavailable locally. They
+validate:
 - Append-only write & hash chain linking
 - Multi-parameter indexed querying
 - Tamper detection upon direct database payload modification
@@ -144,8 +146,12 @@ Coverage is measured with `pytest-cov`: the final run is 91.08% line
 coverage, 78.76% branch coverage, and 88.27% combined coverage (the pre-change
 baseline was 90.77% line and 88.04% combined). CI enforces an
 85% combined threshold. See [docs/requirements_test_matrix.md](docs/requirements_test_matrix.md)
-for the maintained requirement-to-test mapping. The suite uses isolated SQLite;
-PostgreSQL integration is not claimed.
+for the maintained requirement-to-test mapping. The local default suite uses
+isolated SQLite. PostgreSQL integration infrastructure and tests are under
+`tests/postgres`; the recorded [Gate 3 workflow](https://github.com/wshal/Audit-log-service/actions/runs/38090070659)
+and [postgres-integration job](https://github.com/wshal/Audit-log-service/actions/runs/38090070659/job/114324520174)
+passed. Exact CI test counts were not independently available in the review,
+so no detailed CI count is claimed.
 
 See [docs/audit_review.md](docs/audit_review.md) for the implementation audit and hardening record.
 For a copy/paste clean-database walkthrough of every scenario with expected outputs, see [docs/manual_validation.md](docs/manual_validation.md).

@@ -24,9 +24,11 @@ The **Audit Log Service** provides an immutable, append-only, tamper-evident led
 ### 2.1 Deterministic Serialization
 A common vulnerability in hash chaining is serialization non-determinism across platforms, operating systems, and language runtimes (e.g., whitespace variations, unsorted dictionary keys).
 
-We enforce deterministic canonical serialization:
+We enforce deterministic canonical serialization using Python's `json.dumps`
+with sorted keys and compact separators. This is the project's historical
+compatibility format, not a claim of complete RFC 8785 conformance:
 ```text
-C(data) = JSON.stringify(data, sort_keys=True, separators=(",", ":"))
+C(data) = json.dumps(data, sort_keys=True, separators=(",", ":"))
 ```
 
 ### 2.2 Hash Chain Formulation

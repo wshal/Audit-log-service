@@ -430,3 +430,9 @@ This document records the traceability of AI assistance throughout the developme
 - **PostgreSQL job**: [postgres-integration job 114324520174](https://github.com/wshal/Audit-log-service/actions/runs/38090070659/job/114324520174)
 - **Observed result**: Both the overall workflow and `postgres-integration` job passed. This is the first recorded real PostgreSQL execution for the Gate 3 checkpoint `a663d68`.
 - **Local comparison**: Local validation remained **136 passed, 7 skipped** because PostgreSQL was unavailable locally; the CI run supplies the PostgreSQL integration evidence.
+
+### Entry 41: Gate 4 documentation consistency checkpoint
+- **Date**: 2026-10-11
+- **Changes**: Reconciled README and audit-review validation claims with the current local baseline and recorded Gate 3 PostgreSQL CI evidence; clarified that the architecture formula uses the project's Python `json.dumps` compatibility format.
+- **Validation**: `\.venv\Scripts\python -m pytest -q -W default` completed with **136 passed, 7 skipped**, and one existing Starlette/httpx deprecation warning. No SQLAlchemy resource warnings were observed. The seven skips remain PostgreSQL database-backed tests unavailable locally.
+- **Limitations preserved**: Exact PostgreSQL CI test counts were not independently available; initialization-only verifier trust remains an internal Python-boundary assumption; no dedicated key-rotation workflow is claimed; and the serializer remains project-specific rather than RFC 8785-compliant.
