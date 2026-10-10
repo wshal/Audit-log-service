@@ -80,7 +80,12 @@ Stop the service with `Ctrl+C`, then run:
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-Expected: `93 passed` (plus one dependency deprecation warning). The combined flow is `test_end_to_end_ideal_workflow` in `tests/test_security_controls.py`; tenant authorization coverage is in `tests/test_tenant_authorization.py`, and startup quarantine/direct-entry/recovery coverage is in `tests/test_preflight_quarantine.py`.
+Expected local default result: **136 passed, 7 skipped** (plus one dependency
+deprecation warning). All seven skips are PostgreSQL database-backed tests when
+PostgreSQL/Docker is unavailable locally. The combined flow is
+`test_end_to_end_ideal_workflow` in `tests/test_security_controls.py`; tenant
+authorization coverage is in `tests/test_tenant_authorization.py`, and startup
+quarantine/direct-entry/recovery coverage is in `tests/test_preflight_quarantine.py`.
 
 For reproducible coverage and compile validation, run:
 
@@ -91,8 +96,12 @@ For reproducible coverage and compile validation, run:
 
 The final measured run is 91.08% line coverage, 78.76% branch coverage, and
 88.27% combined coverage (pre-change baseline: 90.77% line and 88.04%
-combined). PostgreSQL is not exercised by these
-commands.
+combined). PostgreSQL is intentionally not exercised by these local commands.
+The separately selectable integration suite is under `tests/postgres`. Gate 3
+recorded a successful [workflow](https://github.com/wshal/Audit-log-service/actions/runs/38090070659)
+and [postgres-integration job](https://github.com/wshal/Audit-log-service/actions/runs/38090070659/job/114324520174).
+Detailed CI test counts were not independently available in this review, so
+they are not inferred here.
 
 If startup is quarantined after repair, set a unique one-time token in
 `AUDIT_QUARANTINE_RECOVERY_TOKEN` for one process start. The token hash and

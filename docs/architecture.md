@@ -90,9 +90,10 @@ The revision adds an empty `ledger_state` foundation table with a singleton
 identifier constrained to `1`, `next_sequence >= 1`, a 64-character `tip_hash`,
 and `state_version >= 1`. This stage does not activate the append allocator or
 backfill a state row; those operations require a separately reviewed
-validation/allocator migration. PostgreSQL migration execution is prepared by
-the Alembic environment but remains unverified until a real PostgreSQL service
-and driver are exercised.
+validation/allocator migration. Gate 3 recorded successful execution through the
+real PostgreSQL `postgres-integration` CI job (links below); PostgreSQL/Docker
+was unavailable in the local validation environment, and detailed CI test
+counts were not independently available in this review.
 
 SQLite reports DDL as non-transactional, so an operational failure during an
 additive upgrade can leave some new columns or tables present while the
@@ -108,7 +109,9 @@ types/nullability/defaults, missing uniqueness, and missing ledger-state checks
 fail closed. An empty database may be initialized; a non-empty database without
 the recognized audit baseline is rejected and requires an explicit operator
 adoption decision. Migration tests preserve populated mixed-epoch values and
-run the real verifier after migration; PostgreSQL execution remains unverified.
+run the real verifier after migration. Local migration tests use SQLite;
+PostgreSQL execution is provided by the recorded CI job rather than by the
+local run.
 
 ### PostgreSQL integration validation (Gate 1)
 
@@ -133,6 +136,11 @@ The integration tests run the real Alembic configuration and inspect PostgreSQL
 tables, nullability, uniqueness/indexes, check constraints, migration revision,
 repeatability, and empty-ledger initialization. Compose credentials are
 disposable local test credentials, not production secrets.
+
+Recorded Gate 3 CI evidence: [workflow](https://github.com/wshal/Audit-log-service/actions/runs/38090070659),
+[postgres-integration job](https://github.com/wshal/Audit-log-service/actions/runs/38090070659/job/114324520174).
+Both were reported successful. Exact executed/passed/skipped counts from the
+detailed job log were not independently available in this review.
 
 The PostgreSQL tests include direct DML checks for the singleton, sequence,
 tip-hash, state-version, and audit-sequence constraints. Each expected failure
@@ -183,8 +191,11 @@ the lock-owning transaction so a SQLite writer lock is not leaked. Lifecycle
 journal creation requires the same session-held allocator lock and advances the
 same state row before commit. Retention and redaction wrap all post-lock work
 in failure cleanup so lookup, signing, flush, and commit failures roll back the
-record, journal, and state changes and clear allocator ownership. PostgreSQL
-execution and multi-instance behavior remain unverified in this environment.
+record, journal, and state changes and clear allocator ownership. The current
+local environment does not execute PostgreSQL or multi-instance
+tests. PostgreSQL execution is evidenced by the recorded Gate 3 CI job above;
+independent multi-host behavior, commit-outcome recovery, retries, and
+idempotency remain outside this gate.
 
 Allocator-owned append and lifecycle failures use a common fail-closed cleanup
 path. Rollback is attempted and ownership is invalidated in a `finally` path;

@@ -423,3 +423,10 @@ This document records the traceability of AI assistance throughout the developme
 ### Entry 39: Record initialization verifier trust boundary
 - **Date**: 2026-10-11
 - **Design assumption**: The initialization-only verifier path is a trusted internal Python boundary used by `initialize_ledger_state()`. It is not an isolated capability that is inaccessible to every direct Python caller; ordinary HTTP/API callers cannot invoke it. This remains a known assumption unless a later security review identifies a concrete bypass.
+
+### Entry 40: Gate 3 PostgreSQL CI verification
+- **Date**: 2026-10-11
+- **Workflow run**: [GitHub Actions run 38090070659](https://github.com/wshal/Audit-log-service/actions/runs/38090070659)
+- **PostgreSQL job**: [postgres-integration job 114324520174](https://github.com/wshal/Audit-log-service/actions/runs/38090070659/job/114324520174)
+- **Observed result**: Both the overall workflow and `postgres-integration` job passed. This is the first recorded real PostgreSQL execution for the Gate 3 checkpoint `a663d68`.
+- **Local comparison**: Local validation remained **136 passed, 7 skipped** because PostgreSQL was unavailable locally; the CI run supplies the PostgreSQL integration evidence.
