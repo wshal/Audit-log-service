@@ -436,3 +436,13 @@ This document records the traceability of AI assistance throughout the developme
 - **Changes**: Reconciled README and audit-review validation claims with the current local baseline and recorded Gate 3 PostgreSQL CI evidence; clarified that the architecture formula uses the project's Python `json.dumps` compatibility format.
 - **Validation**: `\.venv\Scripts\python -m pytest -q -W default` completed with **136 passed, 7 skipped**, and one existing Starlette/httpx deprecation warning. No SQLAlchemy resource warnings were observed. The seven skips remain PostgreSQL database-backed tests unavailable locally.
 - **Limitations preserved**: Exact PostgreSQL CI test counts were not independently available; initialization-only verifier trust remains an internal Python-boundary assumption; no dedicated key-rotation workflow is claimed; and the serializer remains project-specific rather than RFC 8785-compliant.
+
+### Entry 42: Timestamp ordering and strict JSON remediation
+- **Date**: 2026-10-12
+- **Intent**: Close the pre-release findings for mixed-precision timestamp ordering and non-standard JSON numeric constants while preserving historical hash-bound values.
+- **Changes**:
+  - Repository, tenant-scoped, compliance, and retention filters now compare parsed UTC instants in application code. Existing timestamp strings remain unchanged; malformed stored timestamps fail closed. This is correctness-first and may trade query performance for portability across SQLite and PostgreSQL.
+  - Payload validation and canonical serialization recursively reject `NaN`, `Infinity`, and `-Infinity`; persisted JSON is parsed with strict constant rejection and invalid history returns `MALFORMED_RECORD` during verification.
+  - Added regression tests for mixed-precision boundaries, nested non-finite request values, canonical serialization, and invalid persisted payloads. Updated release documentation to qualify truncation detection and distinguish current versus historical evidence.
+- **Validation**: Focused integrity/canonicalization/scenario tests: **26 passed**. Full default suite after remediation: **142 passed, 7 skipped**, with the existing Starlette/httpx deprecation warning. The configured coverage command passed at **89.04% combined**. PostgreSQL remained unavailable locally; its seven database-backed tests were skipped. Compileall and `git diff --check` passed.
+- **Limitations**: Timestamp filtering currently materializes the scoped candidate set before instant comparison; an indexed derived instant column would require an additive migration and integrity policy. The project remains intentionally non-RFC-8785 canonicalization, and valid signed tail truncation still requires an independent checkpoint.

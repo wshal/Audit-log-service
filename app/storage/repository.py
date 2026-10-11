@@ -17,7 +17,7 @@ from app.crypto.hasher import (
     compute_event_content_hash,
     compute_record_chain_hash,
 )
-from app.models.schemas import AuditEventCreate, QueryFilters
+from app.models.schemas import AuditEventCreate, QueryFilters, parse_timestamp
 from app.storage.database import AuditRecordEntity, LedgerStateEntity
 from app.storage.database import AuditEpochTransitionEntity
 from app.crypto.signer import sign_record_hash, signing_key_id
@@ -287,19 +287,19 @@ class AuditLedgerRepository:
             query = query.filter(AuditRecordEntity.resource_id == filters.resourceId)
         if filters.eventType:
             query = query.filter(AuditRecordEntity.event_type == filters.eventType)
-        if filters.fromTime:
-            query = query.filter(AuditRecordEntity.timestamp >= filters.fromTime)
-        if filters.toTime:
-            query = query.filter(AuditRecordEntity.timestamp <= filters.toTime)
-
-        total_count = query.count()
-
-        results = (
-            query.order_by(AuditRecordEntity.sequence_num.asc())
-            .offset(filters.offset)
-            .limit(filters.limit)
-            .all()
-        )
+        candidates = query.order_by(AuditRecordEntity.sequence_num.asc()).all()
+        lower = parse_timestamp(filters.fromTime) if filters.fromTime else None
+        upper = parse_timestamp(filters.toTime) if filters.toTime else None
+        results_all = []
+        for record in candidates:
+            instant = parse_timestamp(record.timestamp)
+            if lower and instant < lower:
+                continue
+            if upper and instant > upper:
+                continue
+            results_all.append(record)
+        total_count = len(results_all)
+        results = results_all[filters.offset:filters.offset + filters.limit]
 
         return results, total_count
 

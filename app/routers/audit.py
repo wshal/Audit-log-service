@@ -105,18 +105,11 @@ def query_audit_events(
     inferred = resolve_tenant_by_id(resourceId) if resourceId and not resourceType else None
     if inferred:
         resourceType = inferred[0]
+        filters = filters.model_copy(update={"resourceType": resourceType})
     tenant_id = resolve_tenant(resourceType, resourceId) if resourceType and resourceId else (inferred[2] if inferred else tenantId)
     if tenant_id:
         authorize(principal, "read", tenant_id, resourceType, resourceId)
-        query = db.query(AuditRecordEntity).filter(AuditRecordEntity.tenant_id == tenant_id)
-        if resourceType: query = query.filter(AuditRecordEntity.resource_type == resourceType)
-        if resourceId: query = query.filter(AuditRecordEntity.resource_id == resourceId)
-        if actorId: query = query.filter(AuditRecordEntity.actor_id == actorId)
-        if eventType: query = query.filter(AuditRecordEntity.event_type == eventType)
-        if fromTime: query = query.filter(AuditRecordEntity.timestamp >= fromTime)
-        if toTime: query = query.filter(AuditRecordEntity.timestamp <= toTime)
-        total = query.count()
-        records = query.order_by(AuditRecordEntity.sequence_num.asc()).offset(offset).limit(limit).all()
+        records, total = repo.query_events(filters, principal=principal, tenant_id=tenant_id)
     elif principal.tenant_grants:
         # Ambiguous unrestricted list queries fail closed; this prevents counts from leaking.
         raise HTTPException(status_code=403, detail="A tenant-scoped resource filter is required")

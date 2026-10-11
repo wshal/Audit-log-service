@@ -20,7 +20,7 @@ from app.crypto.hasher import (
     compute_sha256,
 )
 from app.crypto.signer import public_key_for_id, verify_record_signature
-from app.models.schemas import VerificationResult, ViolationType
+from app.models.schemas import VerificationResult, ViolationType, strict_json_loads
 from app.storage.database import AuditRecordEntity, LedgerStateEntity
 from app.storage.database import AuditEpochTransitionEntity
 from app.storage.repository import AuditLedgerRepository
@@ -102,16 +102,16 @@ class ChainVerificationService:
         for manifest in records:
             if manifest.event_type == "AUDIT_RECORD_ARCHIVED":
                 try:
-                    payload = json.loads(manifest.payload_json)
+                    payload = strict_json_loads(manifest.payload_json)
                     archive_manifests.setdefault(payload["sequenceNum"], []).append(payload)
-                except (json.JSONDecodeError, KeyError, TypeError):
+                except (json.JSONDecodeError, ValueError, KeyError, TypeError):
                     continue
             elif manifest.event_type == "AUDIT_RECORD_REDACTED":
                 try:
-                    payload = json.loads(manifest.payload_json)
+                    payload = strict_json_loads(manifest.payload_json)
                     target = payload["redactedSequenceNum"]
                     redaction_manifests.setdefault(target, []).append(payload)
-                except (json.JSONDecodeError, KeyError, TypeError):
+                except (json.JSONDecodeError, ValueError, KeyError, TypeError):
                     # The manifest's own content-hash verification below will report it.
                     continue
 
@@ -162,9 +162,9 @@ class ChainVerificationService:
 
             # 3. Check content integrity (with redaction handling if applicable)
             try:
-                payload = json.loads(rec.payload_json)
-                redaction_meta = json.loads(rec.redaction_metadata_json) if rec.redaction_metadata_json else None
-            except json.JSONDecodeError:
+                payload = strict_json_loads(rec.payload_json)
+                redaction_meta = strict_json_loads(rec.redaction_metadata_json) if rec.redaction_metadata_json else None
+            except (json.JSONDecodeError, ValueError):
                 return VerificationResult(
                     intact=False, recordsVerified=idx,
                     firstBrokenSequence=rec.sequence_num, firstBrokenRecordId=rec.id,

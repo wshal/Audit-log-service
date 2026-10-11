@@ -7,11 +7,11 @@
 
 | Requirement | Current outcome | Review conclusion |
 |---|---|---|
-| Append event with required fields | `POST /audit/events` writes a chained record and server-assigns UTC time when omitted. | Met. Input timestamps are now canonical UTC instants, so lexical SQLite range comparisons are reliable for new data. |
+| Append event with required fields | `POST /audit/events` writes a chained record and server-assigns UTC time when omitted. | Met. Hash-bound timestamp strings are preserved; time filters compare parsed UTC instants so mixed precision is ordered chronologically. |
 | Query by actor, resource, event type, time, pagination | `GET /audit/events` supports all required combinations. | Met. Invalid/reversed time windows now return 422. |
 | Hash chain and verification | SHA-256 content and block hashes, a genesis value, sequence/link/hash checks. | Met for datastore changes that do not rewrite the entire ledger. |
 | Direct mutation/deletion detection | Verification reports first failed sequence/type. | Met and tested. |
-| Retention/archive | Records are soft-archived; original event/hash fields stay present. | Meets the stated soft-delete option, but archival state itself is not hash-bound. |
+| Retention/archive | Records are soft-archived; original event/hash fields stay present and lifecycle manifests are verified. | Meets the stated soft-delete option; archive state is checked against lifecycle-manifest evidence rather than rewritten into historical hashes. |
 | Structured redaction | PII is replaced with commitment tokens. A chained `AUDIT_RECORD_REDACTED` manifest now binds the post-redaction payload and metadata. | Improved: later changes to a redacted record are detected. |
 | Bulk export | Filtered records, lifecycle witnesses, signed record hashes, public keys, and a bundle hash are returned. | Partial: it authenticates records but does not yet provide a privacy-preserving proof of inclusion in one global-chain checkpoint. |
 | Compliance normalization/report | Ambiguity document and client-access report exist. | Met as a deliberately scoped prototype. |
@@ -39,7 +39,7 @@ The new signature and manifest checks intentionally reject records written by th
 
 ## Validation run
 
-Historical validation record: `\.venv\Scripts\python.exe -m pytest -q` completed with **33 passed** at the earlier review checkpoint. The current suite and coverage evidence are maintained in [requirements_test_matrix.md](requirements_test_matrix.md); the latest local default result is **136 passed, 7 skipped**, with the seven skips limited to PostgreSQL database-backed tests unavailable without PostgreSQL/Docker. The recorded [Gate 3 workflow](https://github.com/wshal/Audit-log-service/actions/runs/38090070659) and [postgres-integration job](https://github.com/wshal/Audit-log-service/actions/runs/38090070659/job/114324520174) passed; exact CI test counts were not independently available in the review.
+Historical validation record: `\.venv\Scripts\python.exe -m pytest -q` completed with **33 passed** at the earlier review checkpoint. The current suite and coverage evidence are maintained in [requirements_test_matrix.md](requirements_test_matrix.md); the latest local default result is **142 passed, 7 skipped**, with the seven skips limited to PostgreSQL database-backed tests unavailable without PostgreSQL/Docker. The recorded [Gate 3 workflow](https://github.com/wshal/Audit-log-service/actions/runs/38090070659) and [postgres-integration job](https://github.com/wshal/Audit-log-service/actions/runs/38090070659/job/114324520174) passed; exact CI test counts were not independently available in the review.
 
 ## Phase 1B remediation status
 

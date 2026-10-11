@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 from threading import Lock
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -239,6 +240,16 @@ app = FastAPI(
     ),
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError):
+    """Return safe validation details without echoing non-finite payloads."""
+    details = [
+        {"loc": list(error.get("loc", ())), "msg": error.get("msg", "Invalid request"), "type": error.get("type", "value_error")}
+        for error in exc.errors()
+    ]
+    return JSONResponse(status_code=422, content={"detail": details})
 
 
 @app.middleware("http")
