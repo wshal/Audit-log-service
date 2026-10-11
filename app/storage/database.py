@@ -20,6 +20,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
+from app.models.schemas import strict_json_loads
 
 Base = declarative_base()
 
@@ -285,7 +286,7 @@ class AuditRecordEntity(Base):
             "actorId": self.actor_id,
             "resourceType": self.resource_type,
             "resourceId": self.resource_id,
-            "payload": json.loads(self.payload_json),
+            "payload": strict_json_loads(self.payload_json),
             "timestamp": self.timestamp,
             "contentHash": self.content_hash,
             "prevHash": self.prev_hash,
@@ -294,7 +295,7 @@ class AuditRecordEntity(Base):
             "signingKeyId": self.signing_key_id,
             "isArchived": self.is_archived,
             "archivedAt": self.archived_at,
-            "redactionMetadata": json.loads(self.redaction_metadata_json) if self.redaction_metadata_json else None,
+            "redactionMetadata": strict_json_loads(self.redaction_metadata_json) if self.redaction_metadata_json else None,
             "tenantId": self.tenant_id,
             "authenticatedSubject": self.authenticated_subject,
             "credentialId": self.credential_id,

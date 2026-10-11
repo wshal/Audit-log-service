@@ -126,7 +126,7 @@ python -m pytest -q
 python -m pytest -q --cov=app --cov-branch --cov-report=term-missing --cov-fail-under=85
 python -m compileall -q app tests
 ```
-The current local suite contains **136 passed, 7 skipped** tests (including
+The current local suite contains **142 passed, 7 skipped** tests (including
 configuration failure regressions). The seven skips are PostgreSQL
 database-backed tests because PostgreSQL/Docker was unavailable locally. They
 validate:
@@ -142,9 +142,9 @@ validate:
 - Regulatory compliance reporting and anomaly detection
 - API authentication/role enforcement, Ed25519 record signatures, offline signature verification, lifecycle-manifest witnesses, and archival-state tamper detection
 
-Coverage is measured with `pytest-cov`: the final run is 91.08% line
-coverage, 78.76% branch coverage, and 88.27% combined coverage (the pre-change
-baseline was 90.77% line and 88.04% combined). CI enforces an
+Coverage is measured with `pytest-cov`: the current local run on 2026-10-12 is
+89.04% combined coverage (the earlier 91.08% line / 78.76% branch / 88.27%
+combined measurement is retained as historical evidence). CI enforces an
 85% combined threshold. See [docs/requirements_test_matrix.md](docs/requirements_test_matrix.md)
 for the maintained requirement-to-test mapping. The local default suite uses
 isolated SQLite. PostgreSQL integration infrastructure and tests are under

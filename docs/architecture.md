@@ -13,7 +13,7 @@ The **Audit Log Service** provides an immutable, append-only, tamper-evident led
 ### Core Invariants
 1. **Append-Only Immutability**: No API routes exist to mutate (`PUT`, `PATCH`) or delete (`DELETE`) audit records.
 2. **Deterministic Cryptographic Chaining**: Every record's hash mathematically binds its own canonical payload, its sequential block number, and the cryptographic hash of the immediate predecessor.
-3. **Provable Tamper Detection**: Any database-level alteration, row deletion, reordering, or truncation is detected with the exact sequence number and failure classification.
+3. **Provable Tamper Detection**: Database-level alteration, row deletion, reordering, and inconsistent truncation are detected with the exact sequence number and failure classification. A validly signed tail truncation cannot be detected without an independently retained checkpoint.
 4. **Non-Breaking Redaction**: Sensitive PII fields can be cryptographically committed and masked without breaking the parent block's historical content hash.
 5. **Compliant Lifecycle & Archival**: Older records can be archived according to SEC / FINRA retention windows without false-positive chain breaks.
 

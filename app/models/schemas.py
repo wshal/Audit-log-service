@@ -17,8 +17,41 @@ def normalize_iso8601(value: str) -> str:
     return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def parse_timestamp(value: str) -> datetime:
+    """Parse a stored or query timestamp as a timezone-aware UTC instant."""
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("Timestamp must include a UTC offset or 'Z'")
+    return parsed.astimezone(timezone.utc)
+
+
+def strict_json_loads(value: str) -> Any:
+    """Parse JSON while rejecting Python's non-standard NaN/Infinity constants."""
+    def reject_constant(token: str):
+        raise ValueError(f"non-finite JSON constant is not permitted: {token}")
+    return json.loads(value, parse_constant=reject_constant)
+
+
 def _canonical_json(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    def validate(item: Any) -> None:
+        import math
+        if isinstance(item, bool) or item is None or isinstance(item, (str, int)):
+            return
+        if isinstance(item, float):
+            if not math.isfinite(item):
+                raise ValueError("Payload must contain only finite JSON numbers")
+            return
+        if isinstance(item, dict):
+            for child in item.values():
+                validate(child)
+            return
+        if isinstance(item, list):
+            for child in item:
+                validate(child)
+            return
+        raise ValueError("Payload contains an unsupported JSON value")
+    validate(value)
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
 
 
 class AuditEventCreate(BaseModel):

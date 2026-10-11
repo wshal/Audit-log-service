@@ -1,6 +1,6 @@
 # P0 Authorization Design: Tenant-Scoped V2 Ledger
 
-**Status:** Approved design; Phase 1B remediation implemented, independent review pending.  
+**Status:** Approved design; Phase 1B remediation implemented and reviewed.
 **Scope:** SEC-03/BOLA and TEST-04 only. This document does not introduce an external identity provider, distributed infrastructure, or unrelated production hardening.
 
 Startup integrity is enforced separately from authorization: schema migration is

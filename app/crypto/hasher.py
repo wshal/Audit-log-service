@@ -10,6 +10,7 @@ Guarantees:
 
 import hashlib
 import json
+import math
 from typing import Any, Dict
 
 GENESIS_PREV_HASH = "0" * 64
@@ -26,7 +27,24 @@ def canonical_json(data: Any) -> str:
     intentionally compatibility-preserving and must not be described as full
     RFC 8785 conformance without a versioned protocol migration.
     """
-    return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    def validate(value: Any) -> None:
+        if isinstance(value, bool) or value is None or isinstance(value, (str, int)):
+            return
+        if isinstance(value, float):
+            if not math.isfinite(value):
+                raise ValueError("canonical JSON does not permit non-finite numbers")
+            return
+        if isinstance(value, dict):
+            for child in value.values():
+                validate(child)
+            return
+        if isinstance(value, (list, tuple)):
+            for child in value:
+                validate(child)
+            return
+        raise TypeError(f"unsupported value for canonical JSON: {type(value).__name__}")
+    validate(data)
+    return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
 
 
 def compute_sha256(canonical_str: str) -> str:

@@ -20,7 +20,7 @@ from app.models.retention_redaction import (
 )
 from app.storage.database import AuditRecordEntity, LedgerStateEntity
 from app.storage.repository import AuditLedgerRepository
-from app.models.schemas import AuditEventCreate
+from app.models.schemas import AuditEventCreate, parse_timestamp, strict_json_loads
 from app.crypto.signer import sign_record_hash, signing_key_id
 from app.crypto.signer import public_key_ring
 from app.runtime_state import ensure_ready
@@ -122,16 +122,16 @@ class LifecycleAndExportService:
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=retention_days)
         cutoff_iso = cutoff_date.isoformat().replace("+00:00", "Z")
 
-        records_query = (
-            session.query(AuditRecordEntity)
-            .filter(AuditRecordEntity.timestamp < cutoff_iso)
-            .filter(AuditRecordEntity.is_archived == False)
-        )
+        records_query = session.query(AuditRecordEntity).filter(AuditRecordEntity.is_archived == False)
         if tenant_id:
             records_query = records_query.filter(AuditRecordEntity.tenant_id == tenant_id)
         if resource_id:
             records_query = records_query.filter(AuditRecordEntity.resource_id == resource_id)
-        records_to_archive = records_query.all()
+        cutoff_instant = parse_timestamp(cutoff_iso)
+        records_to_archive = [
+            record for record in records_query.all()
+            if parse_timestamp(record.timestamp) < cutoff_instant
+        ]
 
         archived_seqs = []
         now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -216,8 +216,8 @@ class LifecycleAndExportService:
         except HTTPException:
             raise ValueError("Audit record not found")
 
-        current_payload = json.loads(rec.payload_json)
-        existing_meta = json.loads(rec.redaction_metadata_json) if rec.redaction_metadata_json else None
+        current_payload = strict_json_loads(rec.payload_json)
+        existing_meta = strict_json_loads(rec.redaction_metadata_json) if rec.redaction_metadata_json else None
 
         unknown_fields = [field for field in field_paths if field not in current_payload]
         already_redacted = [field for field in field_paths if field in (existing_meta or {}).get("commitments", {})]
@@ -344,11 +344,11 @@ class LifecycleAndExportService:
         lifecycle_records = lifecycle_query.order_by(AuditRecordEntity.sequence_num.asc()).all()
         for lifecycle_record in lifecycle_records:
             try:
-                payload = json.loads(lifecycle_record.payload_json)
+                payload = strict_json_loads(lifecycle_record.payload_json)
                 target = payload.get("redactedSequenceNum", payload.get("sequenceNum"))
                 if target in selected_sequences:
                     manifests.append(lifecycle_record.to_read_model())
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, ValueError):
                 continue
         
         # Calculate bundle-level integrity hash: SHA-256 over canonical list of record hashes

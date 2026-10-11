@@ -11,6 +11,7 @@ from app.storage.database import AuditRecordEntity, Base, LedgerStateEntity, ini
 from app.storage.repository import AuditLedgerRepository
 from app.security import Principal
 from app.crypto.hasher import GENESIS_PREV_HASH
+from app.crypto.hasher import canonical_json
 from app.services.verifier import ChainVerificationService
 from app.services.lifecycle import LifecycleAndExportService
 from app.runtime_state import preflight_scope
@@ -98,6 +99,67 @@ def test_timestamps_are_normalized_and_invalid_ranges_are_rejected(client):
     assert server_timestamp.endswith("Z")
     assert client.get("/audit/events?fromTime=2026-10-08T00:00:00Z&toTime=2026-10-07T00:00:00Z").status_code == 422
     assert client.get("/audit/events?fromTime=not-a-time").status_code == 422
+
+
+def test_mixed_precision_timestamp_filters_compare_instants(client):
+    for sequence, timestamp in (("1", "2026-01-01T00:00:00Z"), ("2", "2026-01-01T00:00:00.100000Z")):
+        response = client.post(
+            "/audit/events",
+            json={
+                "eventType": "TIME_CHECK", "actorId": "local-development",
+                "resourceType": "SESSION", "resourceId": sequence, "payload": {},
+                "delegationReason": "timestamp regression", "timestamp": timestamp,
+            },
+        )
+        assert response.status_code == 201
+
+    lower = client.get("/audit/events?fromTime=2026-01-01T00:00:00Z&limit=10")
+    assert lower.status_code == 200
+    assert [item["timestamp"] for item in lower.json()["items"]] == [
+        "2026-01-01T00:00:00Z", "2026-01-01T00:00:00.100000Z"
+    ]
+    upper = client.get("/audit/events?toTime=2026-01-01T00:00:00Z&limit=10")
+    assert upper.status_code == 200
+    assert [item["timestamp"] for item in upper.json()["items"]] == ["2026-01-01T00:00:00Z"]
+
+
+@pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity"])
+def test_non_finite_payload_numbers_are_rejected_at_input(client, value):
+    response = client.post(
+        "/audit/events",
+        content=(
+            '{"eventType":"INVALID_NUMBER","actorId":"local-development",'
+            f'"resourceType":"SESSION","resourceId":"nonfinite","payload":{{"nested":[{value}]}},'
+            '"delegationReason":"strict JSON regression"}'
+        ),
+        headers={"content-type": "application/json"},
+    )
+    assert response.status_code == 422
+    assert client.get("/audit/events?resourceType=SESSION&resourceId=nonfinite").json()["total"] == 0
+
+
+def test_canonical_json_rejects_non_finite_numbers():
+    with pytest.raises(ValueError, match="non-finite"):
+        canonical_json({"nested": [{"value": float("nan")}]})
+
+
+def test_non_finite_persisted_payload_fails_verification(client, db_session):
+    created = client.post(
+        "/audit/events",
+        json={
+            "eventType": "PERSISTED_NUMBER", "actorId": "local-development",
+            "resourceType": "SESSION", "resourceId": "persisted-nonfinite", "payload": {},
+            "delegationReason": "strict JSON regression",
+        },
+    )
+    assert created.status_code == 201
+    record = db_session.query(AuditRecordEntity).filter_by(sequence_num=1).one()
+    record.payload_json = '{"value":NaN}'
+    db_session.commit()
+    result = client.get("/audit/verify")
+    assert result.status_code == 200
+    assert result.json()["intact"] is False
+    assert result.json()["violationType"] == ViolationType.MALFORMED_RECORD.value
 
 
 def test_sqlite_append_serializes_competing_writers(tmp_path):

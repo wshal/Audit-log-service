@@ -19,7 +19,7 @@ were not independently available in this review.
 | CFG-01 | Malformed authentication and resource-registry configuration fails closed | `tests/test_security_controls.py::test_malformed_api_key_configuration_fails_closed`, `test_malformed_resource_registry_fails_closed` | Tested and verified |
 | DB-01 | PostgreSQL migration, constraints, allocator concurrency, and rollback | `tests/postgres/test_migrations.py`, `tests/postgres/test_concurrency.py`; [Gate 3 workflow](https://github.com/wshal/Audit-log-service/actions/runs/38090070659) and [postgres-integration job](https://github.com/wshal/Audit-log-service/actions/runs/38090070659/job/114324520174) | Executed in the recorded CI job; exact CI counts were not independently confirmed |
 
-Latest local default validation is **136 passed, 7 skipped**. All seven local
+Latest local default validation is **142 passed, 7 skipped**. All seven local
 skips are PostgreSQL database-backed cases because PostgreSQL/Docker was not
 available locally. The recorded CI run provides real PostgreSQL execution
 evidence; local SQLite results and CI results are intentionally reported

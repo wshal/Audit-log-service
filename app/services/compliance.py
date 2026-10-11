@@ -17,7 +17,7 @@ from app.models.compliance import (
 from app.services.verifier import ChainVerificationService
 from app.storage.database import AuditRecordEntity
 from app.security import Principal
-from app.models.schemas import normalize_iso8601
+from app.models.schemas import normalize_iso8601, parse_timestamp, strict_json_loads
 from app.runtime_state import ensure_ready
 from app.authorization import authorize, authorize_legacy, require_operation_role, resolve_tenant
 
@@ -79,24 +79,30 @@ class ComplianceService:
         else:
             query = query.filter(AuditRecordEntity.protocol_version == 1)
 
-        if from_time:
-            query = query.filter(AuditRecordEntity.timestamp >= from_time)
-        if to_time:
-            query = query.filter(AuditRecordEntity.timestamp <= to_time)
         if actor_id:
             query = query.filter(AuditRecordEntity.actor_id == actor_id)
 
-        records = query.order_by(AuditRecordEntity.sequence_num.asc()).all()
+        candidates = query.order_by(AuditRecordEntity.sequence_num.asc()).all()
+        lower = parse_timestamp(from_time) if from_time else None
+        upper = parse_timestamp(to_time) if to_time else None
+        records = []
+        for record in candidates:
+            instant = parse_timestamp(record.timestamp)
+            if lower and instant < lower:
+                continue
+            if upper and instant > upper:
+                continue
+            records.append(record)
 
         actor_stats = defaultdict(lambda: {"count": 0, "timestamps": [], "justifications": set()})
         anomalies = []
         event_dicts = []
 
         for r in records:
-            payload = json.loads(r.payload_json)
+            payload = strict_json_loads(r.payload_json)
             actor = r.actor_id
             actor_stats[actor]["count"] += 1
-            actor_stats[actor]["timestamps"].append(r.timestamp)
+            actor_stats[actor]["timestamps"].append((parse_timestamp(r.timestamp), r.timestamp))
 
             justification = payload.get("justification", "UNSPECIFIED")
             actor_stats[actor]["justifications"].add(justification)
@@ -127,8 +133,8 @@ class ComplianceService:
             ActorAccessSummary(
                 actorId=actor,
                 accessCount=data["count"],
-                firstAccess=min(data["timestamps"]) if data["timestamps"] else "",
-                lastAccess=max(data["timestamps"]) if data["timestamps"] else "",
+                firstAccess=min(data["timestamps"])[1] if data["timestamps"] else "",
+                lastAccess=max(data["timestamps"])[1] if data["timestamps"] else "",
                 justifications=list(data["justifications"]),
             )
             for actor, data in actor_stats.items()
