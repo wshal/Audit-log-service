@@ -80,7 +80,7 @@ Stop the service with `Ctrl+C`, then run:
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-Latest current working-tree result: **208 passed, 12 skipped** (plus one
+Latest current working-tree result: **212 passed, 12 skipped** (plus one
 dependency deprecation warning). All twelve skips are PostgreSQL-backed tests
 not selected without PostgreSQL connection configuration. The combined flow is
 `test_end_to_end_ideal_workflow` in `tests/test_security_controls.py`; tenant
@@ -96,14 +96,16 @@ For reproducible coverage and compile validation, run:
 
 The earlier measured run is historical: 91.08% line coverage, 78.76% branch
 coverage, and 88.27% combined coverage. The current local coverage command on
-measured 87.95% combined coverage (the configured 85% gate passed).
+measured 88.02% combined coverage (the configured 85% gate passed).
 PostgreSQL is intentionally not exercised by these local commands; its
 database-backed tests remain separately selectable under `tests/postgres`.
-The separately selectable integration suite is under `tests/postgres`. Gate 3
-recorded a successful [workflow](https://github.com/wshal/Audit-log-service/actions/runs/38090070659)
-and [postgres-integration job](https://github.com/wshal/Audit-log-service/actions/runs/38090070659/job/114324520174).
-Detailed CI test counts were not independently available in this review, so
-they are not inferred here.
+The separately selectable integration suite is under `tests/postgres`. The
+PR #7 [workflow](https://github.com/wshal/Audit-log-service/actions/runs/38293842786)
+and [postgres-integration job](https://github.com/wshal/Audit-log-service/actions/runs/38293842786/job/114960061221)
+completed successfully for source revision `76e93211137e02d222d320757dab8a5e1f635bbc`,
+which is included in merged `origin/main` revision
+`d21195c7550bc747e6130b1630d7e721ffe80540`. Detailed CI test counts were not
+independently available in this review, so they are not inferred here.
 
 To execute the PostgreSQL suite locally without placing credentials in a URL,
 use the dedicated password file and guarded test database:
@@ -122,7 +124,7 @@ try {
 }
 ```
 
-The accepted local PostgreSQL 16 run completed **18 passed, zero skipped**.
+The accepted local PostgreSQL 16 run completed **22 passed, zero skipped**.
 This is a separate execution mode and must not be added to the default-suite
 count. It does not substitute for CI validation on a final committed revision.
 

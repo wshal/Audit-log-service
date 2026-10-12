@@ -54,6 +54,8 @@ This service guarantees an append-only, tamper-evident audit ledger:
 │   ├── architecture.md               # Deep-dive architecture and design trade-offs
 │   ├── audit_review.md               # Implementation audit and improvement record
 │   ├── final_engineering_summary.md  # Final engineering summary and risk analysis
+│   ├── endpoint_security_inventory.md # Endpoint authorization inventory
+│   ├── threat_model.md                # Threat model and deployment assumptions
 │   └── scenario_c_normalization.md   # Requirement normalization and scope boundary
 ├── app/
 │   ├── __init__.py
@@ -85,6 +87,7 @@ This service guarantees an append-only, tamper-evident audit ledger:
     ├── test_scenario_b.py            # Scenario B tests (Retention, Redaction, Export)
     ├── test_scenario_c.py            # Scenario C tests (Compliance reports & Anomaly detection)
     ├── test_integrity_regressions.py # Concurrency, timestamp, and redaction regression tests
+    ├── test_endpoint_inventory.py    # Executable endpoint and request-boundary inventory
     └── test_security_controls.py     # Auth, RBAC, Ed25519 signatures & witness tests
 ```
 
@@ -160,7 +163,7 @@ python -m pytest -q
 python -m pytest -q --cov=app --cov-branch --cov-report=term-missing --cov-report=xml --cov-fail-under=85
 python -m compileall -q app tests
 ```
-The latest current working-tree run contains **208 passed, 12 skipped** tests
+The latest current working-tree run contains **212 passed, 12 skipped** tests
 (including configuration failure regressions). The twelve skips are PostgreSQL
 database-backed tests because this default invocation has no PostgreSQL
 connection configuration. They
@@ -178,20 +181,18 @@ validate:
 - API authentication/role enforcement, Ed25519 record signatures, offline signature verification, lifecycle-manifest witnesses, and archival-state tamper detection
 
 Coverage is measured with `pytest-cov`: the latest current working-tree run is
-87.95% combined coverage (the earlier 91.08% line / 78.76% branch / 88.27%
+88.02% combined coverage (the earlier 91.08% line / 78.76% branch / 88.27%
 combined measurement is retained as historical evidence). CI enforces an
 85% combined threshold. See [docs/requirements_test_matrix.md](docs/requirements_test_matrix.md)
 for the maintained requirement-to-test mapping. The local default suite uses
 isolated SQLite. PostgreSQL integration infrastructure and tests are under
-`tests/postgres`; the recorded [Gate 3 workflow](https://github.com/wshal/Audit-log-service/actions/runs/38090070659)
-and [postgres-integration job](https://github.com/wshal/Audit-log-service/actions/runs/38090070659/job/114324520174)
-passed for the earlier Gate 3 checkpoint. PR #5's PostgreSQL evidence is
-recorded in [workflow run 38173087249](https://github.com/wshal/Audit-log-service/actions/runs/38173087249)
-and its [postgres-integration job](https://github.com/wshal/Audit-log-service/actions/runs/38173087249/job/114569645659),
-which tested source commit `23c0658`; that tree was merged as `4b20228`.
-Exact CI test counts were not independently available, so no detailed count is claimed.
+`tests/postgres`. PR #7's [pull-request workflow](https://github.com/wshal/Audit-log-service/actions/runs/38293842786)
+and [postgres-integration job](https://github.com/wshal/Audit-log-service/actions/runs/38293842786/job/114960061221)
+passed for source commit `76e9321`; the [standard test job](https://github.com/wshal/Audit-log-service/actions/runs/38293842786/job/114960061509)
+also passed. The merge revision is `d21195c`. Detailed CI test counts were not
+independently available from the accessible job logs, so no CI count is claimed.
 Separately, the accepted local PostgreSQL 16 required-mode execution ran
-`tests/postgres` against the guarded `audit_test` database: **18 passed, zero
+`tests/postgres` against the guarded `audit_test` database: **22 passed, zero
 skipped**. It is a separate invocation and must not be added to the default
 suite count.
 

@@ -140,7 +140,7 @@ docker compose -f docker-compose.postgres.yml down -v
 
 Clear the three environment variables after the command; the password file is
 not read or recorded by the repository. With this configuration, the accepted
-local PostgreSQL 16 execution completed **18 passed, zero skipped**. The
+local PostgreSQL 16 execution completed **22 passed, zero skipped**. The
 default suite deliberately has no PostgreSQL URL and therefore skips its twelve
 database-backed cases.
 
@@ -149,10 +149,11 @@ tables, nullability, uniqueness/indexes, check constraints, migration revision,
 repeatability, and empty-ledger initialization. Compose credentials are
 disposable local test credentials, not production secrets.
 
-Recorded Gate 3 CI evidence: [workflow](https://github.com/wshal/Audit-log-service/actions/runs/38090070659),
-[postgres-integration job](https://github.com/wshal/Audit-log-service/actions/runs/38090070659/job/114324520174).
-Both were reported successful. Exact executed/passed/skipped counts from the
-detailed job log were not independently available in this review.
+Recorded PR #7 CI evidence: [workflow](https://github.com/wshal/Audit-log-service/actions/runs/38293842786),
+[postgres-integration job](https://github.com/wshal/Audit-log-service/actions/runs/38293842786/job/114960061221).
+Both were successful for source `76e9321`, merged as `d21195c`. Exact
+executed/passed/skipped counts from the detailed job log were not independently
+available in this review.
 
 The PostgreSQL tests include direct DML checks for the singleton, sequence,
 tip-hash, state-version, and audit-sequence constraints. Each expected failure

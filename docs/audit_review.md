@@ -39,9 +39,9 @@ The new signature and manifest checks intentionally reject records written by th
 
 ## Validation run
 
-Historical validation record: `\.venv\Scripts\python.exe -m pytest -q` completed with **33 passed** at the earlier review checkpoint. The current suite and coverage evidence are maintained in [requirements_test_matrix.md](requirements_test_matrix.md); the latest current working-tree result is **208 passed, 12 skipped**, with the twelve skips limited to PostgreSQL-backed tests not selected without PostgreSQL connection configuration. The separate required-mode local PostgreSQL 16 execution completed **18 passed, zero skipped** against `audit_test`; it is not added to the default-suite total. The recorded Gate 3 workflow passed, and PR #5's [workflow](https://github.com/wshal/Audit-log-service/actions/runs/38173087249) and [postgres-integration job](https://github.com/wshal/Audit-log-service/actions/runs/38173087249/job/114569645659) passed for source `23c0658`, merged as `4b20228`; exact CI test counts were not independently available.
+Historical validation record: `\.venv\Scripts\python.exe -m pytest -q` completed with **33 passed** at the earlier review checkpoint. The current suite and coverage evidence are maintained in [requirements_test_matrix.md](requirements_test_matrix.md); the latest current working-tree result is **212 passed, 12 skipped**, with the twelve skips limited to PostgreSQL-backed tests not selected without PostgreSQL connection configuration. The separate required-mode local PostgreSQL 16 execution completed **22 passed, zero skipped** against `audit_test`; it is not added to the default-suite total. PR #7's [workflow](https://github.com/wshal/Audit-log-service/actions/runs/38293842786) and [postgres-integration job](https://github.com/wshal/Audit-log-service/actions/runs/38293842786/job/114960061221) passed for source `76e9321`, merged as `d21195c`; exact CI test counts were not independently available.
 
-The current uncommitted Phase B checkpoint implementation is covered by
+The merged Phase B checkpoint implementation is covered by
 `tests/test_checkpoints.py`. It validates a versioned signed checkpoint and
 requires authoritative full-ledger verification before reporting a matching
 prefix or unanchored suffix. It does not provide external storage immutability,

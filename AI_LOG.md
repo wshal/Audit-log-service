@@ -865,3 +865,72 @@ These results describe the uncommitted working tree, not a committed revision
 or CI run. External checkpoint storage, immutable retention, monotonic
 publication, independent key custody, outage policy, and detection of valid
 tail truncation beyond a trusted checkpoint remain unresolved owner decisions.
+
+## Entry 64 - P0 attestation, endpoint inventory, and threat-model evidence
+
+**Date:** 2026-10-13
+
+Reviewed the post-PR #7 repository state without changing application behavior.
+The local branch is `security/checkpoint-release-prep` at source commit
+`76e93211137e02d222d320757dab8a5e1f635bbc`; `origin/main` is the merged PR #7
+revision `d21195c7550bc747e6130b1630d7e721ffe80540`. The PR #7 pull-request
+workflow and `postgres-integration` job were retrieved as successful for the
+source commit. Detailed GitHub job test counts were not available through the
+accessible log endpoint and are not claimed here.
+
+Added an evidence-oriented attestation update, `docs/endpoint_security_inventory.md`,
+and `docs/threat_model.md`. The inventory maps every registered health and audit
+route to authentication, role/capability, tenant/resource scope, input limits,
+state-changing behavior, and named evidence. The threat model records implemented
+controls separately from deployment assumptions and residual risks, including the
+process-local rate limiter, external checkpoint requirement, key custody, TLS,
+backup, and dependency-scanning limitations.
+
+The attestation retains the candidate declaration and existing owner-provided
+identity/date values, binds the PR source and merged revisions, links claims to
+source/tests, and explicitly leaves final owner confirmation and signing
+outstanding. No application code, tests, schema, migration, or Git history was
+changed by this evidence pass.
+
+## Entry 65 - Final attestation and release-gap register
+
+**Date:** 2026-10-13
+
+Finalized the evidence-oriented attestation after confirming the merged PR #7
+revision (`d21195c7550bc747e6130b1630d7e721ffe80540`) and source revision
+(`76e93211137e02d222d320757dab8a5e1f635bbc`). The original owner-confirmed
+identity, assignment, development date, submission date, and declaration were
+retained. A typed attestation date of 2026-10-13 was recorded separately.
+
+Generated two identical deterministic `git archive --format=tar HEAD`
+artifacts for the merged HEAD tree and recorded SHA-256
+`46a2ba4244a1a3adbbb5d863558ecc335384fd7fdd91058de68f3691040651a4` in
+`ATTESTATION.md`. The digest excludes the current uncommitted documentation
+updates and therefore does not purport to identify a future commit.
+
+Expanded the claim-to-evidence matrix and added
+`docs/release_gap_register.md`, separating mandatory owner gates, P0 technical
+gaps, evidence gaps, deployment-dependent controls, and deferred scope. The
+register keeps the process-local limiter, key custody, TLS/proxy, dependency
+scanning, backup/recovery, observability, and external-checkpoint limitations
+explicit. Prompt 23 has not started.
+
+Validation in this task was documentation/source consistency only:
+`git diff --check` passed (with the existing line-ending warning for
+`ATTESTATION.md`) and `tests/test_endpoint_inventory.py` completed 11 passed
+with one existing Starlette/httpx deprecation warning. Previously recorded
+full-suite and PostgreSQL results remain attributed to their exact source
+revision and are not re-counted as this documentation run.
+
+## Entry 66 - Attestation provenance correction
+
+**Date:** 2026-10-13
+
+Verified the PR #7 provenance from Git history: source branch
+`security/checkpoint-release-prep` at `76e93211137e02d222d320757dab8a5e1f635bbc`
+was merged into `main` as `d21195c7550bc747e6130b1630d7e721ffe80540` on
+2026-10-13 at 00:28:07 +0530. The attestation now treats merged `main` as
+the primary code baseline, removes obsolete owner-confirmation placeholders
+for the confirmed identity and dates, and distinguishes the uncommitted
+documentation from the committed archive digest. No other branch contains
+additional committed work represented as part of the attested `main` baseline.
