@@ -53,6 +53,21 @@ jobs:
       - name: Run PostgreSQL migration integration tests
         env:
           POSTGRES_TEST_DATABASE_URL: postgresql+psycopg://audit:audit@localhost:5432/audit_test
-        run: python -m pytest tests/postgres -q
+          POSTGRES_TEST_REQUIRED: "1"
+        run: python -m pytest tests/postgres -q -rs --junitxml=postgres-test-results.xml
+      - name: Require PostgreSQL tests to execute
+        shell: bash
+        run: >-
+          python -c "import sys, xml.etree.ElementTree as ET;
+          root=ET.parse('postgres-test-results.xml').getroot();
+          skipped=len(root.findall('.//testcase/skipped'));
+          print(f'PostgreSQL skipped tests: {skipped}');
+          sys.exit(1 if skipped else 0)"
       - name: Compile application and tests
         run: python -m compileall -q app tests
+      - name: Upload PostgreSQL test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgres-test-results
+          path: postgres-test-results.xml

@@ -23,6 +23,8 @@ def _database_url() -> str | None:
 def postgres_engine():
     url = _database_url()
     if not url:
+        if os.getenv("POSTGRES_TEST_REQUIRED") == "1":
+            pytest.fail("POSTGRES_TEST_DATABASE_URL is required for the PostgreSQL CI job")
         pytest.skip("POSTGRES_TEST_DATABASE_URL is not configured")
     engine = create_engine(url, pool_pre_ping=True)
     try:

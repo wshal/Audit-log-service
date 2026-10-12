@@ -23,6 +23,81 @@ from app.security import Principal
 from app.services.verifier import ChainVerificationService
 from app.runtime_state import get_state, set_state, preflight_scope
 from app.rate_limit import enforce_ip_limit
+from app.crypto.signer import validate_signing_configuration
+
+
+MAX_REQUEST_BODY_BYTES = 256 * 1024
+
+
+class RequestBodyLimitMiddleware:
+    """Reject oversized HTTP bodies before application parsing buffers them."""
+
+    def __init__(self, app, max_bytes: int = MAX_REQUEST_BODY_BYTES):
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        content_length = next(
+            (value for key, value in scope.get("headers", []) if key.lower() == b"content-length"),
+            None,
+        )
+        if content_length is not None:
+            try:
+                if int(content_length) > self.max_bytes:
+                    await self._reject(send)
+                    return
+            except ValueError:
+                # Let normal request validation handle malformed framing.
+                pass
+
+        received = 0
+        response_started = False
+        overflowed = False
+        rejection_sent = False
+
+        async def limited_receive():
+            nonlocal received, overflowed, response_started, rejection_sent
+            if overflowed:
+                return {"type": "http.disconnect"}
+            message = await receive()
+            if message.get("type") == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_bytes:
+                    overflowed = True
+                    if not response_started:
+                        await self._reject(send)
+                        response_started = True
+                        rejection_sent = True
+                    return {"type": "http.disconnect"}
+            return message
+
+        async def tracked_send(message):
+            nonlocal response_started
+            if rejection_sent:
+                return
+            if message.get("type") == "http.response.start":
+                if response_started:
+                    raise RuntimeError("ASGI response.start sent more than once")
+                response_started = True
+            await send(message)
+
+        await self.app(scope, limited_receive, tracked_send)
+
+    async def _reject(self, send):
+        body = b'{"detail":"Request body too large"}'
+        await send({
+            "type": "http.response.start",
+            "status": 413,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(body)).encode("ascii")),
+            ],
+        })
+        await send({"type": "http.response.body", "body": body})
 
 # Engine and session creation
 engine = get_engine(settings.DATABASE_URL)
@@ -219,6 +294,7 @@ async def lifespan(app: FastAPI):
     try:
         init_db(engine)
         initialize_ledger_state(engine)
+        validate_signing_configuration()
         run_integrity_preflight()
     except Exception:
         try:
@@ -274,6 +350,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Keep this application-level guard in addition to any deployment-proxy limit.
+# It protects requests whose body length is not declared by Content-Length.
+app.add_middleware(RequestBodyLimitMiddleware, max_bytes=MAX_REQUEST_BODY_BYTES)
 
 # Register routers
 app.include_router(audit_router)

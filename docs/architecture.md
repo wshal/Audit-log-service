@@ -112,8 +112,10 @@ fail closed. An empty database may be initialized; a non-empty database without
 the recognized audit baseline is rejected and requires an explicit operator
 adoption decision. Migration tests preserve populated mixed-epoch values and
 run the real verifier after migration. Local migration tests use SQLite;
-PostgreSQL execution is provided by the recorded CI job rather than by the
-local run.
+PostgreSQL execution is separately selectable from the SQLite default suite.
+The accepted working tree was also exercised locally against PostgreSQL 16 in
+required mode; this local evidence does not replace CI evidence tied to a final
+committed revision.
 
 ### PostgreSQL integration validation (Gate 1)
 
@@ -128,11 +130,19 @@ Run locally:
 
 ```powershell
 docker compose -f docker-compose.postgres.yml up -d --wait
-$env:POSTGRES_TEST_DATABASE_URL = "postgresql+psycopg://audit:audit@localhost:5432/audit_test"
+$env:PGPASSFILE = "$env:APPDATA\postgresql\pgpass.conf"
+$env:POSTGRES_TEST_DATABASE_URL = "postgresql+psycopg://audit@localhost:5432/audit_test"
+$env:POSTGRES_TEST_REQUIRED = "1"
 .venv\Scripts\python -m pip install -r requirements-postgres.txt
-.venv\Scripts\python -m pytest tests/postgres -q
+.venv\Scripts\python -m pytest tests/postgres -q -rs
 docker compose -f docker-compose.postgres.yml down -v
 ```
+
+Clear the three environment variables after the command; the password file is
+not read or recorded by the repository. With this configuration, the accepted
+local PostgreSQL 16 execution completed **18 passed, zero skipped**. The
+default suite deliberately has no PostgreSQL URL and therefore skips its twelve
+database-backed cases.
 
 The integration tests run the real Alembic configuration and inspect PostgreSQL
 tables, nullability, uniqueness/indexes, check constraints, migration revision,
@@ -152,6 +162,27 @@ integration cases order-independent. Check validation uses stable constraint
 names and semantic reflected expressions because PostgreSQL may add casts or
 parentheses to `get_check_constraints()` SQL text; invalid tip-hash DML remains
 the enforcement test.
+
+### Phase B checkpoint contract
+
+`app/checkpoint.py` defines the strict version-1 checkpoint fields
+(`formatVersion`, `ledgerId`, `protocolEpoch`, `sequenceNum`,
+`terminalRecordHash`, `checkpointCreatedAt`, `checkpointKeyId`, and
+`signature`). The signature covers deterministic, compact, sorted-key Python
+JSON for every field except `signature`; this remains a project-specific
+versioned representation and is not RFC 8785. Checkpoint signing uses a
+separate injected Ed25519 interface and an explicitly supplied trusted key map.
+
+`app/services/checkpoint_verifier.py` validates checkpoint identity and
+authenticity, invokes the authoritative full-ledger verifier, and then compares
+the actual record at the checkpoint sequence. It reports explicit outcomes for
+no checkpoint, malformed or unauthenticated checkpoints, shorter ledgers,
+hash mismatches, matching prefixes, and locally valid but newer unanchored
+suffixes. `tests/test_checkpoints.py` covers these outcomes and local tamper
+failures. This is a contract/verifier foundation only: there is no production
+checkpoint publisher, external immutable store, monotonic witness, key-custody
+workflow, or outage policy. A valid signed tail truncation remains outside the
+detectable boundary without an independently retained trusted checkpoint.
 
 ### PostgreSQL concurrency and transaction validation (Gate 2)
 
@@ -209,8 +240,13 @@ does not retry or claim that such an operation is safe to repeat.
 
 ### Startup integrity and quarantine
 
-After additive schema migration, the application performs a read-only full-ledger
-preflight using the existing V1/V2 verifier. State transitions are
+After additive schema migration and ledger-state initialization, startup first
+validates signing configuration, then performs a read-only full-ledger preflight
+using the existing V1/V2 verifier. In production, missing or malformed private
+key material, malformed public-key-ring entries, or a mismatch between the
+active private key and configured public key keep the service quarantined; no
+development fallback is permitted. Health and readiness responses do not expose
+key material. State transitions are
 `uninitialized` -> `validating` -> `healthy` or `quarantined`. In quarantine,
 `/health` exposes only minimal status, `/ready` returns `503`, and every
 `/audit/*` route returns `503`; liveness remains available for diagnostics. A
@@ -229,6 +265,8 @@ atomic persistence keeps the marker and service quarantined. Outcome files use
 same-directory temporary files, file fsync, replacement, and best-effort
 directory fsync where supported; unsupported directory durability is an
 explicit filesystem limitation rather than proof of recovery.
+Signing-key rotation, external key custody, and runtime configuration reload
+remain separate operational work.
 Initial reservation creation also flushes the reservation file and containing
 directory before recovery proceeds. A genuine directory-open or fsync failure
 is fatal to the attempt; only an unavailable directory-fsync primitive is
@@ -240,6 +278,7 @@ treated as an explicit unsupported-platform limitation.
 
 ### Scenario A: Greenfield Core Service
 - **Write API**: `POST /audit/events` validates payload, establishes next sequence number, hashes content and block, and commits atomically.
+- **Request boundary**: The application rejects HTTP request bodies larger than 256 KiB with `413 Request body too large` before route parsing. A deployment proxy should enforce a compatible limit as defense in depth; the application guard also counts streamed chunks when `Content-Length` is absent. If overflow is detected after response start, the existing status cannot be replaced with 413; downstream receives `http.disconnect` and its valid completion events are forwarded. A duplicate downstream `http.response.start` raises the documented ASGI protocol error and is not forwarded. Client-visible transport termination after an uncaught protocol error depends on the configured Uvicorn/server deployment and is not inferred from the unit-level ASGI tests.
 - **Query API**: `GET /audit/events` supports indexed multi-attribute filtering by actor, resource, eventType, timestamp ranges, and pagination (`limit`, `offset`).
 - **Chain Verification**: `GET /audit/verify` traverses ledger in sequence, detecting:
   - `CONTENT_HASH_MISMATCH`

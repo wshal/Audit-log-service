@@ -1,6 +1,7 @@
 """Ed25519 signing for records; private keys must never be stored in the ledger."""
 
 import base64
+import binascii
 import json
 import os
 from pathlib import Path
@@ -58,13 +59,27 @@ def public_key_ring() -> dict[str, str]:
             ring = json.loads(raw)
             if not isinstance(ring, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in ring.items()):
                 raise ValueError
+            for public_key in ring.values():
+                decoded = base64.b64decode(public_key, validate=True)
+                Ed25519PublicKey.from_public_bytes(decoded)
             active_id = signing_key_id()
             if active_id not in ring or ring[active_id] != public_key_b64():
                 raise RuntimeError("AUDIT_SIGNING_PUBLIC_KEYS must contain the active key ID and matching public key")
             return ring
-        except (json.JSONDecodeError, ValueError) as exc:
+        except (json.JSONDecodeError, ValueError, binascii.Error) as exc:
             raise RuntimeError("AUDIT_SIGNING_PUBLIC_KEYS must be a JSON key-id to base64-public-key mapping") from exc
     return {signing_key_id(): public_key_b64()}
+
+
+def validate_signing_configuration() -> None:
+    """Eagerly validate the signing material required by future ledger writes.
+
+    This is deliberately invoked at application startup so an empty ledger cannot
+    report ready when its first signing operation would fail.  It uses the same
+    private-key and public-key-ring loaders as normal signing and verification.
+    """
+    _private_key()
+    public_key_ring()
 
 
 def public_key_for_id(key_id: str | None) -> str | None:

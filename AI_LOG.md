@@ -661,3 +661,207 @@ Validation:
 
 The PostgreSQL tests are configured for the existing PostgreSQL 16 CI service;
 no local PostgreSQL execution is claimed.
+
+## Entry 56 - Request boundary, endpoint inventory, and PostgreSQL CI execution guard
+
+**Date:** 2026-10-12
+
+Implemented the bounded Prompt 10B hardening batch. The application now rejects
+HTTP request bodies over 256 KiB with HTTP 413, including streamed bodies that
+do not provide a usable `Content-Length`. Added executable route-inventory and
+security-contract tests covering authentication, rate limiting, role checks,
+tenant/resource scope, and public health/readiness routes. The PostgreSQL CI job
+now requires its database URL, emits a JUnit report, fails if any PostgreSQL
+test is skipped, and uploads that report as an artifact. Local PostgreSQL skips
+remain allowed when the service is unavailable.
+
+Validation on the current working tree:
+
+- `.venv\Scripts\python -m pytest tests/test_endpoint_inventory.py -q` - 6 passed, 1 warning.
+- `.venv\Scripts\python -m pytest tests/test_security_controls.py -q` - 27 passed, 1 warning.
+- `.venv\Scripts\python -m pytest tests/postgres -q -rs` - 6 passed, 12 skipped, 1 warning; PostgreSQL/Docker was unavailable locally, so no local PostgreSQL execution is claimed.
+- `.venv\Scripts\python -m pytest -q --cov=app --cov-branch --cov-report=term-missing --cov-report=xml --cov-fail-under=85` - 178 passed, 12 skipped, 1 warning; 86.93% combined coverage and the 85% threshold passed.
+- `.venv\Scripts\python -m compileall -q app tests` - passed.
+- `git diff --check` - passed.
+
+The endpoint streamed-body test invokes the ASGI middleware directly because
+the local Starlette/httpx test transport rejects a chunked request before the
+application receives it; the production guard itself is therefore tested at
+the ASGI boundary. PostgreSQL execution remains a CI responsibility and must
+run with `POSTGRES_TEST_REQUIRED=1` and zero skipped cases.
+
+## Entry 57 - Prompt 10D streamed-body and endpoint-inventory remediation
+
+**Date:** 2026-10-12
+
+Corrected the Prompt 10B streamed-body path so overflow is converted to HTTP
+413 through the complete application middleware stack, including CORS and the
+quarantine/rate-limit middleware. The limiter now sends the bounded rejection
+and presents downstream parsing with a disconnect, suppressing any secondary
+400 response. Expanded endpoint inventory to include directly registered
+`APIRoute` objects and added a synthetic direct-route regression. Added a
+controlled protected-endpoint rate-limit test that asserts HTTP 429.
+
+Validation:
+
+- `.venv\Scripts\python -m pytest tests/test_endpoint_inventory.py -q` - 9 passed, 1 warning.
+- `.venv\Scripts\python -m pytest tests/test_security_controls.py -q` - 27 passed, 1 warning.
+- `.venv\Scripts\python -m pytest -q --cov=app --cov-branch --cov-report=term-missing --cov-report=xml --cov-fail-under=85` - 181 passed, 12 skipped, 1 warning; 86.89% combined coverage and the 85% threshold passed.
+- `.venv\Scripts\python -m compileall -q app tests` - passed.
+- `git diff --check` - passed.
+
+The twelve local PostgreSQL skips remain database-backed tests unavailable
+without PostgreSQL/Docker; no local PostgreSQL execution is claimed.
+
+## Entry 58 - Response-start overflow completion
+
+**Date:** 2026-10-12
+
+Resolved the ASGI response-start edge case in the request-body guard. When
+overflow is detected before any response starts, the middleware emits one
+complete HTTP 413 response and suppresses downstream response messages. When a
+downstream component has already started a response, the middleware does not
+send a second response start or suppress the component's completion messages;
+it presents `http.disconnect` to the downstream receiver and forwards the
+downstream response sequence. Added deterministic ASGI event-sequence coverage
+for this boundary.
+
+Validation:
+
+- `.venv\Scripts\python -m pytest tests/test_endpoint_inventory.py -q` - 10 passed, 1 warning.
+- `.venv\Scripts\python -m pytest tests/test_security_controls.py -q` - 27 passed, 1 warning.
+- `.venv\Scripts\python -m pytest tests/postgres -q -rs` - 6 passed, 12 skipped, 1 warning; PostgreSQL/Docker was unavailable locally.
+- `.venv\Scripts\python -m pytest -q` - 182 passed, 12 skipped, 1 warning.
+- `.venv\Scripts\python -m pytest -q --cov=app --cov-branch --cov-report=term-missing --cov-report=xml --cov-fail-under=85` - 182 passed, 12 skipped, 1 warning; 86.94% combined coverage and the 85% threshold passed.
+- `.venv\Scripts\python -m compileall -q app tests` - passed.
+- `git diff --check` - passed.
+
+No local PostgreSQL execution is claimed; the existing CI-required guard
+remains unchanged.
+
+## Entry 59 - ASGI response-start invariant
+
+**Date:** 2026-10-12
+
+The request-body middleware now raises a deterministic `RuntimeError` when a
+downstream component attempts a second `http.response.start` after the first
+has been emitted. The duplicate event is never forwarded. Middleware-generated
+413 responses continue to suppress downstream replacement responses, while a
+valid downstream response after overflow-after-start continues to forward its
+final body event.
+
+Validation:
+
+- `.venv\Scripts\python -m pytest tests/test_endpoint_inventory.py -q` - 11 passed, 1 warning.
+- `.venv\Scripts\python -m pytest tests/test_security_controls.py -q` - 27 passed, 1 warning.
+- `.venv\Scripts\python -m pytest tests/postgres -q -rs` - 6 passed, 12 skipped, 1 warning; PostgreSQL/Docker was unavailable locally.
+- `.venv\Scripts\python -m pytest -q` - 183 passed, 12 skipped, 1 warning.
+- `.venv\Scripts\python -m pytest -q --cov=app --cov-branch --cov-report=term-missing --cov-report=xml --cov-fail-under=85` - 183 passed, 12 skipped, 1 warning; 86.96% combined coverage and the 85% threshold passed.
+- `.venv\Scripts\python -m compileall -q app tests` - passed.
+- `git diff --check` - passed.
+
+The local PostgreSQL skips remain non-evidence for PostgreSQL execution.
+
+## Entry 61 - Local PostgreSQL setup attempt
+
+**Date:** 2026-10-12
+
+Inspected the Windows development environment before PostgreSQL integration
+testing. Python 3.12.7 is available, but no `psql` client, Docker executable,
+or PostgreSQL Windows service was found. The venv did not contain the declared
+PostgreSQL driver, so the existing `requirements-postgres.txt` profile was
+installed without changing tracked files; `psycopg` 3.3.6 is now available in
+the venv. No PostgreSQL server or database was installed or modified because
+that would require a separate service/installer decision and administrative
+environment changes.
+
+The PostgreSQL suite therefore remains **6 passed, 12 skipped** locally, with
+no database-backed execution claimed. A dedicated PostgreSQL 16 service and
+isolated `audit_test` database using the CI URL scheme remain the next required
+environment prerequisite.
+
+## Entry 60 - ASGI protocol-error deployment limitation
+
+**Date:** 2026-10-12
+
+Documented the request-body middleware's deployment boundary in
+`docs/architecture.md`. The supported local entry point is Uvicorn
+(`uvicorn app.main:app --port 8000`). Before response start, overflow produces
+one complete 413 response. After response start, the status cannot be replaced;
+the middleware sends `http.disconnect` downstream and forwards valid completion
+events. Duplicate `http.response.start` raises the deterministic ASGI protocol
+error and is not forwarded. A real Uvicorn/client transport test for the
+client-visible result after that uncaught protocol error was not feasible
+without adding a test-only route or changing deployment configuration, so no
+server-level termination guarantee is claimed.
+
+## Entry 62 - Startup signing validation and final working-tree evidence reconciliation
+
+**Date:** 2026-10-12
+
+**Root cause:** An empty production ledger could complete database preflight and
+report readiness before the lazily loaded Ed25519 signing key was first needed.
+The first signing-dependent write could then fail after a false-positive ready
+response.
+
+**Remediation:** Startup now validates the configured private key and public-key
+ring before integrity preflight may transition the service to healthy. Missing or
+malformed production private-key material, malformed public-key-ring entries,
+and active private/public-key mismatch follow the existing quarantine path.
+The development fallback remains non-production only. Health and readiness
+responses do not disclose key material. The implementation is in
+`app/crypto/signer.py` and `app/main.py`; lifecycle coverage is in
+`tests/test_preflight_quarantine.py`.
+
+**Accepted validation evidence on the current uncommitted working tree:**
+
+- Focused signing/quarantine/security/endpoint suite: **77 passed, 1 warning**.
+- Dedicated required-mode local PostgreSQL 16 suite against guarded `audit_test`:
+  **18 passed, zero skipped, 1 warning**. It used `PGPASSFILE`,
+  `POSTGRES_TEST_DATABASE_URL`, and `POSTGRES_TEST_REQUIRED=1`; no credential
+  contents were recorded.
+- Default full suite with configured coverage: **189 passed, 12 skipped, 1
+  warning**, **87.63% combined coverage**, with the 85% gate passed. The twelve
+  PostgreSQL-backed skips occur because that separate default invocation has no
+  PostgreSQL connection configuration; they are not added to the dedicated
+  PostgreSQL result.
+- `python -m compileall -q app tests` and `git diff --check` passed.
+
+The warning is the existing Starlette/TestClient deprecation warning. These
+changes remain uncommitted, so the committed base SHA does not attest to the
+complete validated working tree. Tail-truncation detection without an
+independent trusted checkpoint, process-local rate limiting without a shared
+backend, key custody/rotation/runtime reload, backup/restore drills, deployment
+TLS controls, and scale validation remain separate limitations.
+
+## Entry 63 - Phase B checkpoint contract and integrity verification
+
+**Date:** 2026-10-12
+
+Implemented the bounded Phase B checkpoint contract in the current uncommitted
+working tree. `app/checkpoint.py` defines strict version-1 checkpoint fields,
+deterministic project-specific Python JSON signing bytes, separate Ed25519
+checkpoint signing, trusted-key verification, and explicit verification status
+values. `app/services/checkpoint_verifier.py` reuses the authoritative full-ledger
+verifier before returning `MATCHING_PREFIX` or `UNANCHORED_SUFFIX`. The test-only
+`tests/checkpoint_store.py` remains an in-memory test double; no production
+publisher, external store, migration, or CI change was introduced.
+
+Independent review and remediation added adversarial coverage for earlier
+signature/chain tampering, missing ledger state, invalid V1/V2 transition
+evidence, corrupted suffixes, malformed checkpoints, identity mismatch, and
+missing integrity authorization context.
+
+Current working-tree validation:
+
+- Focused security/integrity/authorization/migration/idempotency/checkpoint suite:
+  **191 passed, 1 warning**.
+- Full configured coverage suite: **208 passed, 12 skipped, 1 warning**;
+  **87.95% combined coverage**, with the configured 85% threshold passed.
+- Required local PostgreSQL suite: **18 passed, zero skipped, 1 warning**.
+- Compileall and `git diff --check`: passed.
+
+These results describe the uncommitted working tree, not a committed revision
+or CI run. External checkpoint storage, immutable retention, monotonic
+publication, independent key custody, outage policy, and detection of valid
+tail truncation beyond a trusted checkpoint remain unresolved owner decisions.
