@@ -146,8 +146,12 @@ API abuse controls are configurable with `AUDIT_RATE_LIMIT_CAPACITY`,
 `AUDIT_RATE_LIMIT_WINDOW_SECONDS`, and `AUDIT_RATE_LIMIT_MAX_KEYS`. The current
 implementation bounds unauthenticated `/audit` traffic by client address and
 authenticated traffic by credential identity and operation. It is process-local;
-multi-worker or multi-instance deployments require a shared limiter to claim a
-global quota. The limiter returns generic HTTP 429 responses and does not log
+the supported prototype deployment is one application process and one replica;
+do not use multiple Uvicorn/Gunicorn workers or replicas while relying on this
+limiter. Operators must verify the effective process and replica count because
+the application cannot reliably detect that configuration itself. A deployment
+requiring a global quota must provide a shared limiter before claiming aggregate
+enforcement. The limiter returns generic HTTP 429 responses and does not log
 keys or digests. The application rejects request bodies larger than 256 KiB
 with HTTP 413 before route parsing; deployments should enforce a compatible
 proxy limit as defense in depth. `POST /audit/events` supports a durable `Idempotency-Key`

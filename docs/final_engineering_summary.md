@@ -43,7 +43,7 @@ This submission implements a working **Tamper-Evident Audit Log Service prototyp
 - **PostgreSQL evidence**: PR #7's [workflow](https://github.com/wshal/Audit-log-service/actions/runs/38293842786) and [postgres-integration job](https://github.com/wshal/Audit-log-service/actions/runs/38293842786/job/114960061221) passed for source `76e9321`, merged as `d21195c`. Exact PostgreSQL executed/passed/skipped counts were not independently available from the accessible job logs, so no CI count is claimed.
 - **Backend limitation**: The local default suite exercises isolated SQLite; the separate local PostgreSQL run and recorded CI job provide PostgreSQL evidence. Neither alone establishes vulnerability-free behavior, independent multi-host coverage, or CI validation tied to a final committed revision.
 - **Git History**: PR #7 source `76e9321` was merged to `main` as `d21195c`; local validation and CI evidence are reported separately.
-- **Attestation**: `ATTESTATION.md` binds the PR source and merged revisions and contains the candidate declaration, but owner confirmation, signature, and any required archive digest remain outstanding.
+- **Attestation**: `ATTESTATION.md` records the confirmed candidate metadata, typed sign-off, and claim-to-evidence matrix. Its reproducible SHA-256 archive digest identifies the merged `main` revision `d21195c7550bc747e6130b1630d7e721ffe80540`; it is not a cryptographic signature or independent third-party verification. Any final submission archive must be generated from the final committed revision and recorded without creating a circular digest update.
 
 ## 5. Phase 1B Authorization and Integrity Remediation
 

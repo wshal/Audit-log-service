@@ -15,8 +15,18 @@ Configuration:
 
 Exceeding a limit returns HTTP 429 with a generic response. Entries are bounded
 with oldest-key eviction and expire when their window rolls over. This is a
-per-process control only; deployments with multiple workers or instances need a
-shared backend before claiming global enforcement.
+per-process control only. The supported deployment contract for this prototype
+is one application process and one service replica; do not start
+Uvicorn/Gunicorn with multiple workers or deploy multiple replicas while
+relying on this limiter. A deployment that needs aggregate enforcement must
+choose and operate a shared backend before claiming a global quota.
+
+The application cannot reliably discover the effective worker count or replica
+count from inside the ASGI process. Operators must validate the deployment
+configuration and runtime process/replica count as part of release checks
+(for example, inspect the server command, container replica setting, and
+process list). No startup guard is claimed to prevent an operator from
+misconfiguring a multi-process deployment.
 
 `POST /audit/events` accepts an `Idempotency-Key` matching
 `[A-Za-z0-9._~-]{16,128}`. Keyed requests require an explicit timestamp. The

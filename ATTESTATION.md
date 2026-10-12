@@ -10,7 +10,7 @@
 - **PR #7 source revision**: `76e93211137e02d222d320757dab8a5e1f635bbc`
 - **Merged `main` revision**: `d21195c7550bc747e6130b1630d7e721ffe80540`
 - **Committed code scope**: authorization, integrity and recovery hardening; PostgreSQL migration, allocator, concurrency, rollback, checkpoint, credential, idempotency, rate-limit, and request-boundary work present in merged `main`.
-- **Current evidence scope**: the uncommitted documentation and attestation updates are maintained separately and are not represented as part of the committed revision or its archive digest.
+- **Current evidence scope**: the endpoint inventory, threat model, release-gap register, and attestation are committed in `a7b89cc`; the later Prompt 24 rate-limit contract documentation remains uncommitted. Neither set of documentation changes is represented by the older archive digest for `d21195c`.
 
 ## Dates and sign-off
 
@@ -30,9 +30,10 @@ with SHA-256. Repeating the command produced the same digest:
 - **SHA-256**: `46a2ba4244a1a3adbbb5d863558ecc335384fd7fdd91058de68f3691040651a4`
 - **Reproducibility check**: two independently generated archives, 655,360 bytes each, matched byte-for-byte.
 
-This digest covers the committed `HEAD` tree only. The documentation and
-attestation edits in the current working tree are not included until a later
-commit and must not be represented as covered by this digest.
+This digest covers the specified committed `d21195c` tree only. The later
+documentation changes in `a7b89cc` and the current uncommitted Prompt 24
+updates are not included and must not be represented as covered by this
+digest.
 
 ## Candidate declaration
 

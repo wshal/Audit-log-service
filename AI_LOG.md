@@ -934,3 +934,21 @@ the primary code baseline, removes obsolete owner-confirmation placeholders
 for the confirmed identity and dates, and distinguishes the uncommitted
 documentation from the committed archive digest. No other branch contains
 additional committed work represented as part of the attested `main` baseline.
+
+## Entry 67 - Rate-limit deployment contract
+
+**Date:** 2026-10-13
+
+Reviewed the assignment-facing deployment instructions and repository evidence.
+The project documents local Uvicorn execution, SQLite as the default backend,
+and no supported multi-worker or multi-replica production deployment. The
+existing limiter therefore remains intentionally process-local under an
+explicit one-process/one-replica prototype contract.
+
+Updated the API-abuse, README, architecture, threat-model, and release-gap
+documentation to state that contract and provide a practical operator check of
+server workers, container replicas, and the runtime process list. The
+application cannot reliably discover effective worker/replica counts, so no
+misleading startup guard was added. A shared limiter remains conditional on a
+future multi-instance deployment decision. Existing rate-limit implementation,
+request limits, authentication, and response semantics were unchanged.
