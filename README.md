@@ -108,10 +108,20 @@ Every API route requires an `X-API-Key` header. For local development and assess
 X-API-Key: development-only-audit-key
 ```
 
-In a production environment, provide keys and asymmetric signing materials via environment variables:
+In a production environment, configure an operator-managed credential manifest
+via `AUDIT_CREDENTIAL_MANIFEST`; it stores only SHA-256 credential digests and
+principal metadata. Provision and rotate credentials outside the normal API,
+under a separately authenticated OS identity. Missing, malformed, or unreadable
+production authority returns HTTP 503; unknown, expired, revoked, or superseded
+keys return generic HTTP 401. The service must have read-only access to the
+manifest and its parent directory. Rotation stages a non-authenticating key,
+requires explicit delivery acknowledgement, then activates it under the
+manifest lock. See [docs/credential_lifecycle.md](docs/credential_lifecycle.md).
+
+Signing materials remain environment-configured:
 ```powershell
 $env:AUDIT_ENV = "production"
-$env:AUDIT_API_KEYS = '{"<secret-api-key>":{"subject":"audit-writer","roles":["writer"]}}'
+$env:AUDIT_CREDENTIAL_MANIFEST = "C:\\ProgramData\\AuditLog\\credentials.json"
 $env:AUDIT_SIGNING_PRIVATE_KEY = "<base64 Ed25519 private key, 32 raw bytes>"
 $env:AUDIT_SIGNING_KEY_ID = "ed25519-2026-10"
 $env:AUDIT_SIGNING_PUBLIC_KEYS = '{"ed25519-2026-10":"<base64 Ed25519 public key>"}'
@@ -120,13 +130,26 @@ $env:AUDIT_CORS_ORIGINS = "https://audit.example.com"
 
 Supported RBAC roles: `reader`, `writer`, `retention_admin`, `privacy_officer`, `exporter`, `compliance_reviewer`, and `admin`. Administrator privileges do not bypass tenant isolation or actor-attribution rules, and do not replace the explicit legacy-access or legacy-PII capabilities required for V1 operations.
 
+API abuse controls are configurable with `AUDIT_RATE_LIMIT_CAPACITY`,
+`AUDIT_RATE_LIMIT_WINDOW_SECONDS`, and `AUDIT_RATE_LIMIT_MAX_KEYS`. The current
+implementation bounds unauthenticated `/audit` traffic by client address and
+authenticated traffic by credential identity and operation. It is process-local;
+multi-worker or multi-instance deployments require a shared limiter to claim a
+global quota. The limiter returns generic HTTP 429 responses and does not log
+keys or digests. `POST /audit/events` supports a durable `Idempotency-Key`
+header (16–128 safe ASCII characters); keyed requests require an explicit
+timestamp. The key and canonical request fingerprint are committed atomically
+with the event and ledger state, and a replay returns HTTP 200 with
+`Idempotent-Replay: true`. Idempotency records are retained for 24 hours and
+expired-key cleanup is an explicit maintenance operation.
+
 ### 2. Run Test Suite
 ```bash
 python -m pytest -q
 python -m pytest -q --cov=app --cov-branch --cov-report=term-missing --cov-fail-under=85
 python -m compileall -q app tests
 ```
-The current local suite contains **142 passed, 7 skipped** tests (including
+The current local suite contains **159 passed, 7 skipped** tests (including
 configuration failure regressions). The seven skips are PostgreSQL
 database-backed tests because PostgreSQL/Docker was unavailable locally. They
 validate:
@@ -143,7 +166,7 @@ validate:
 - API authentication/role enforcement, Ed25519 record signatures, offline signature verification, lifecycle-manifest witnesses, and archival-state tamper detection
 
 Coverage is measured with `pytest-cov`: the current local run on 2026-10-12 is
-89.04% combined coverage (the earlier 91.08% line / 78.76% branch / 88.27%
+86.94% combined coverage (the earlier 91.08% line / 78.76% branch / 88.27%
 combined measurement is retained as historical evidence). CI enforces an
 85% combined threshold. See [docs/requirements_test_matrix.md](docs/requirements_test_matrix.md)
 for the maintained requirement-to-test mapping. The local default suite uses

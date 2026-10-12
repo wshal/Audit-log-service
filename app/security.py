@@ -1,14 +1,17 @@
 """Minimal API-key authentication and role checks for the prototype."""
 
 import json
+import logging
 import os
 from dataclasses import dataclass
 from functools import lru_cache
 
 from fastapi import Depends, HTTPException, Security, status
 from fastapi.security import APIKeyHeader
+from app.credential_store import CredentialAuthorityError, authenticate as authenticate_manifest
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+_security_logger = logging.getLogger("audit.security")
 
 
 @dataclass(frozen=True)
@@ -51,8 +54,32 @@ def _credentials() -> dict[str, Principal]:
 
 
 def authenticated_principal(api_key: str | None = Security(api_key_header)) -> Principal:
+    manifest_path = os.getenv("AUDIT_CREDENTIAL_MANIFEST", "").strip()
+    if manifest_path:
+        try:
+            matched = authenticate_manifest(api_key)
+        except CredentialAuthorityError as exc:
+            _security_logger.warning("authentication_authority_unavailable")
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                                detail="Authentication authority unavailable") from exc
+        if matched is None:
+            _security_logger.info("authentication_rejected outcome=invalid_credential")
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or missing API key")
+        credential_id, entry = matched
+        return Principal(
+            entry["subject"], frozenset(entry["roles"]), credential_id,
+            tuple(entry.get("tenantGrants", ())),
+            bool(entry.get("legacyAccess", False)),
+            bool(entry.get("legacyWrite", entry.get("legacyAccess", False))),
+            bool(entry.get("legacyPiiReader", False)),
+        )
+    if os.getenv("AUDIT_ENV", "development").lower() == "production":
+        _security_logger.warning("authentication_authority_unavailable")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail="Authentication authority unavailable")
     principal = _credentials().get(api_key or "")
     if principal is None:
+        _security_logger.info("authentication_rejected outcome=invalid_credential")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or missing API key")
     return principal
 

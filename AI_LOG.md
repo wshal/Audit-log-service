@@ -458,3 +458,206 @@ This document records the traceability of AI assistance throughout the developme
 - **Date**: 2026-10-12
 - **Changes**: Updated README, audit review, requirements matrix, and engineering summary to distinguish the PR #5 CI source commit `23c0658` from merge commit `4b20228`. Preserved the exact supplied workflow/job links and the absence of detailed PostgreSQL counts. `ATTESTATION.md` was inspected but intentionally unchanged; its `2026-10-07` submission date remains owner-dependent.
 - **Validation**: Documentation-only changes; application tree remains identical to merge commit `4b20228`. `git diff --check`, full tests, coverage, compilation, and local PostgreSQL collection were run; results are reported in the audit response.
+## Entry 45 — Credential lifecycle hardening
+
+**Date:** 2026-10-12
+**Scope:** Prompt 3C credential lifecycle implementation.
+
+Added an explicitly configured operator-managed credential manifest. Active,
+expired, revoked, and superseded credentials are validated per request using
+SHA-256 digests and constant-time comparison. Production requests fail with
+HTTP 503 when the authority is missing, malformed, or unavailable; invalid
+credentials return generic HTTP 401. Rotation and revocation use durable
+atomic replacement helpers. The existing development API-key fallback remains
+development-only compatibility behavior when no manifest path is configured.
+
+Added lifecycle/security regression tests and documented the required separate
+operator/service filesystem boundary. That boundary is a deployment
+assumption and has not been established by this repository.
+
+Validation:
+
+- `.venv\Scripts\python -m pytest tests/test_security_controls.py -q` — 21 passed, 1 warning.
+- `.venv\Scripts\python -m pytest tests/test_tenant_authorization.py tests/test_database_migrations.py tests/test_preflight_quarantine.py tests/test_integrity_regressions.py -q` — 112 passed, 1 warning.
+- `.venv\Scripts\python -m pytest tests/postgres -q` — 6 passed, 7 skipped locally because PostgreSQL/Docker was unavailable, 1 warning.
+- `.venv\Scripts\python -m pytest -q` — 150 passed, 7 skipped, 1 warning.
+- `.venv\Scripts\python -m pytest -q --cov=app --cov-branch --cov-report=term --cov-fail-under=85` — 150 passed, 7 skipped; 87.93% combined coverage; threshold passed.
+- `.venv\Scripts\python -m compileall -q app tests` — passed.
+- `git diff --check` — passed with normal CRLF conversion warnings only.
+## Entry 46 — Credential rotation durability and operator locking
+
+**Date:** 2026-10-12
+**Scope:** Prompt 3D remediation of credential lifecycle P1 findings.
+
+Replaced one-call credential activation with staged delivery, explicit
+acknowledgement, and activation. Added a persistent cross-process operator lock
+(POSIX `fcntl.flock`, Windows one-byte `msvcrt.locking`) with bounded timeout
+around provisioning, staging, acknowledgement, activation, and revocation.
+Post-replacement directory-fsync failures are reported as ambiguous outcomes,
+not falsely rolled back. Updated lifecycle documentation and tests for staged
+credentials, lock timeout, independent-process provisioning, and ambiguous
+activation.
+
+Validation:
+
+- `.venv\Scripts\python -m pytest tests/test_security_controls.py -q` — 26 passed, 1 warning.
+- `.venv\Scripts\python -m pytest -q` — 155 passed, 7 skipped, 1 warning.
+- `.venv\Scripts\python -m pytest -q --cov=app --cov-branch --cov-report=term --cov-fail-under=85` — 155 passed, 7 skipped; 86.94% combined coverage; threshold passed.
+- `.venv\Scripts\python -m pytest tests/postgres -q` — 6 passed, 7 skipped locally because PostgreSQL/Docker was unavailable, 1 warning.
+- `.venv\Scripts\python -m compileall -q app tests` — passed.
+- `git diff --check` — passed with normal CRLF conversion warnings only.
+## Entry 47 — Expiry-state manifest correction
+
+**Date:** 2026-10-12
+**Scope:** Prompt 3E targeted remediation.
+
+Expiry is now derived from `expiresAt` during authentication and no longer
+mutates an in-memory manifest record to the unsupported persisted status
+`expired`. Added regression coverage proving expired credentials are rejected,
+expired/revoked credentials remain valid manifest records after rewrites, and
+staging another credential does not poison reloadability. Prompt 3D staged
+activation and cross-process locking remain unchanged.
+
+Validation:
+
+- `.venv\Scripts\python -m pytest tests/test_security_controls.py -q` — 27 passed, 1 warning.
+- `.venv\Scripts\python -m pytest -q` — 156 passed, 7 skipped, 1 warning.
+- `.venv\Scripts\python -m compileall -q app tests` — passed.
+- `git diff --check` — passed with normal CRLF conversion warnings only.
+
+## Entry 48 — Bounded API abuse limiting
+
+**Date:** 2026-10-12
+**Scope:** Prompt 5 SEC-06 remediation.
+
+Added a bounded process-local fixed-window limiter for `/audit` requests. It
+limits unauthenticated traffic by client address and authenticated traffic by
+credential identity and operation, returns generic HTTP 429 responses, and
+uses bounded oldest-key eviction. A shared backend is still required before a
+deployment can claim a global multi-worker or multi-instance quota.
+
+Crash-safe idempotency was not invented: the append effect and a future
+idempotency record require one atomic persistent transaction, so no idempotency
+guarantee is claimed. This remains an explicit limitation.
+
+Validation:
+
+- `.venv\Scripts\python -m pytest tests/test_rate_limiting.py tests/test_security_controls.py -q` — 30 passed, 1 warning.
+- `.venv\Scripts\python -m pytest -q` — 159 passed, 7 skipped, 1 warning.
+- `.venv\Scripts\python -m pytest -q --cov=app --cov-branch --cov-report=term --cov-fail-under=85` — 159 passed, 7 skipped; 86.94% combined coverage; threshold passed.
+- `.venv\Scripts\python -m pytest tests/postgres -q` — 6 passed, 7 skipped locally because PostgreSQL/Docker was unavailable, 1 warning.
+- `.venv\Scripts\python -m compileall -q app tests` — passed.
+- `git diff --check` — passed with normal CRLF conversion warnings only.
+
+## Entry 49 — Crash-safe audit-event idempotency
+
+**Date:** 2026-10-12
+**Scope:** Prompt 6B implementation.
+
+Added an Alembic-backed idempotency record keyed by authenticated credential,
+tenant/legacy scope, method, endpoint, and client key. The request fingerprint,
+audit record reference, and 24-hour expiry are committed in the same transaction
+as the audit append and ledger-state update. Existing SQLite `BEGIN IMMEDIATE`
+and PostgreSQL ledger-state locking remain the serialization points. Replays
+return the original record; conflicting fingerprints return 409. An explicit
+maintenance cleanup removes only expired idempotency rows.
+
+Unknown commit outcomes are surfaced as HTTP 503 and are not blindly retried;
+later authenticated requests look up the durable scoped result. Idempotency
+metadata is not included in event payloads or historical hashes.
+
+Validation:
+
+- `.venv\Scripts\python -m pytest tests/test_idempotency.py tests/test_database_migrations.py -q` — 20 passed, 1 warning.
+- `.venv\Scripts\python -m pytest -q` — 165 passed, 7 skipped, 1 warning.
+- `.venv\Scripts\python -m pytest -q --cov=app --cov-branch --cov-report=term --cov-fail-under=85` — 165 passed, 7 skipped; 86.69% combined coverage; threshold passed.
+- `.venv\Scripts\python -m pytest tests/postgres -q` — 6 passed, 7 skipped locally because PostgreSQL/Docker was unavailable, 1 warning.
+- `.venv\Scripts\python -m compileall -q app tests` — passed.
+- `git diff --check` — passed with normal CRLF conversion warnings only.
+
+## Entry 50 — Idempotency concurrency evidence completion
+
+**Date:** 2026-10-12
+**Scope:** Additional independent-session duplicate-request regression.
+
+Added a SQLite independent-session concurrency test proving that two identical
+scoped keys produce one audit record, one idempotency record, and one replay.
+
+Final revalidation after this test:
+
+- `.venv\Scripts\python -m pytest -q` — 166 passed, 7 skipped, 1 warning.
+- PostgreSQL collection remains 6 passed, 7 skipped locally because PostgreSQL/Docker was unavailable.
+
+## Entry 51 — Final idempotency validation
+
+**Date:** 2026-10-12
+
+After the independent-session concurrency test was added, the final working
+tree validation completed with **166 passed, 7 skipped**, 1 existing
+Starlette/httpx deprecation warning, and **86.69% combined branch coverage**
+against the configured 85% threshold. Compileall and `git diff --check` passed.
+PostgreSQL collection remained **6 passed, 7 skipped** locally because no
+PostgreSQL/Docker service was available; no local PostgreSQL execution is
+claimed.
+
+## Entry 52 — Tenant-scoped idempotency evidence
+
+**Date:** 2026-10-12
+
+Added coverage proving the same idempotency key is isolated across two V2
+tenant/resource scopes. The focused idempotency suite now has 8 passing tests.
+The final full-suite count after this addition is 167 passed, 7 skipped; the
+seven PostgreSQL-backed cases remain skipped locally.
+
+## Entry 53 — Final coverage after tenant-scope test
+
+**Date:** 2026-10-12
+
+Final configured coverage validation completed with **167 passed, 7 skipped**,
+**86.77% combined branch coverage**, and the 85% threshold passed. The seven
+skips remain PostgreSQL database-backed tests unavailable locally.
+
+## Entry 54 - Idempotency acceptance remediation
+
+**Date:** 2026-10-12
+
+Implemented the bounded Prompt 6D remediation without changing ledger hash,
+signature, authorization, recovery, or rate-limit semantics. The idempotency
+migration now refuses routine destructive downgrade; expiration cleanup only
+operates on an idle maintenance session and rolls back on failure. Added
+regressions for cleanup transaction isolation, credential revocation before
+replay, V1/V2 scope separation, and the HTTP ambiguous-commit 503 response,
+plus PostgreSQL-only constraint, concurrency, and rollback tests.
+
+Validation:
+
+- `.venv\Scripts\python -m pytest tests/test_idempotency.py tests/test_database_migrations.py -q` - 28 passed, 1 warning.
+- `.venv\Scripts\python -m pytest -q` - 172 passed, 10 skipped, 1 warning.
+- `.venv\Scripts\python -m pytest -q --cov=app --cov-branch --cov-report=term --cov-fail-under=85` - 172 passed, 10 skipped; 86.73% combined coverage; threshold passed.
+- `.venv\Scripts\python -m pytest tests/postgres -q` - 6 passed, 10 skipped locally because PostgreSQL/Docker was unavailable; no local PostgreSQL execution is claimed.
+- `.venv\Scripts\python -m compileall -q app tests` - passed.
+- `git diff --check` - passed with normal CRLF conversion warnings only.
+
+## Entry 55 - PostgreSQL idempotency validation coverage
+
+**Date:** 2026-10-12
+
+Added PostgreSQL integration coverage for upgrading a database stamped at
+`0001_schema_foundation` to the idempotency revision, preserving an existing
+audit row and checking the idempotency unique constraint and foreign key. Added
+a PostgreSQL deterministic committed-result/lost-response test that retries
+through a fresh session and verifies one audit row, one idempotency row, the
+same record identity, and ledger sequence advancement. The test is explicitly
+fault injection after commit, not a claim of real network-failure simulation.
+
+Validation:
+
+- `.venv\Scripts\python -m pytest tests/postgres -q` - 6 passed, 12 skipped locally because PostgreSQL/Docker was unavailable.
+- `.venv\Scripts\python -m pytest tests/test_idempotency.py tests/test_database_migrations.py -q` - 28 passed, 1 warning.
+- `.venv\Scripts\python -m pytest -q` - 172 passed, 12 skipped, 1 warning.
+- `.venv\Scripts\python -m pytest -q --cov=app --cov-branch --cov-report=term --cov-fail-under=85` - 172 passed, 12 skipped; 86.73% combined coverage; threshold passed.
+- `.venv\Scripts\python -m compileall -q app tests` - passed.
+- `git diff --check` - passed with normal CRLF conversion warnings only.
+
+The PostgreSQL tests are configured for the existing PostgreSQL 16 CI service;
+no local PostgreSQL execution is claimed.

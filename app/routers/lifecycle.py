@@ -21,8 +21,9 @@ from app.services.lifecycle import LifecycleAndExportService
 from app.security import Principal, require_roles
 from app.authorization import authorize, authorize_legacy, authorize_tenant_action, resolve_tenant, resolve_tenant_by_id
 from app.storage.database import AuditRecordEntity
+from app.rate_limit import enforce_authenticated_limit
 
-router = APIRouter(prefix="/audit", tags=["Retention & Redaction"])
+router = APIRouter(prefix="/audit", tags=["Retention & Redaction"], dependencies=[Depends(enforce_authenticated_limit)])
 
 
 @router.post(

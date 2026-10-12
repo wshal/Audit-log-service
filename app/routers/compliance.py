@@ -12,8 +12,9 @@ from app.routers.audit import get_db
 from app.services.compliance import ComplianceService
 from app.security import Principal, require_roles
 from app.authorization import authorize, authorize_legacy, resolve_tenant
+from app.rate_limit import enforce_authenticated_limit
 
-router = APIRouter(prefix="/audit/compliance", tags=["Regulatory Compliance"])
+router = APIRouter(prefix="/audit/compliance", tags=["Regulatory Compliance"], dependencies=[Depends(enforce_authenticated_limit)])
 
 
 @router.get(

@@ -18,6 +18,8 @@ from sqlalchemy import (
     create_engine,
     inspect,
     text,
+    ForeignKey,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
 from app.models.schemas import strict_json_loads
@@ -215,7 +217,7 @@ def validate_pre_migration_schema(engine) -> None:
 
 def validate_current_schema(engine, revision: str) -> None:
     """Validate a stamped revision before application code relies on it."""
-    if revision != "0001_schema_foundation":
+    if revision not in {"0001_schema_foundation", "0002_idempotency_records"}:
         raise RuntimeError(f"Unsupported or unknown database migration revision: {revision}")
     inspector = inspect(engine)
     tables = set(inspector.get_table_names())
@@ -231,6 +233,28 @@ def validate_current_schema(engine, revision: str) -> None:
     _validate_table_shape(inspector, "audit_epoch_transitions", set(_TRANSITION_COLUMN_SPECS), unique_column="transition_hash")
     _validate_column_specs(inspector, "ledger_state", _LEDGER_STATE_COLUMN_SPECS)
     _validate_ledger_state_checks(inspector, stamped=True)
+    if revision == "0002_idempotency_records":
+        if "idempotency_records" not in tables:
+            raise RuntimeError("Stamped schema is incomplete; missing table: idempotency_records")
+        required = {
+            "id", "scope_principal", "scope_tenant", "scope_method",
+            "scope_endpoint", "idempotency_key", "request_fingerprint",
+            "audit_record_id", "created_at", "expires_at",
+        }
+        _validate_column_specs(
+            inspector,
+            "idempotency_records",
+            {name: (Integer if name in {"id", "audit_record_id"} else String, False)
+             for name in required},
+        )
+        if not any(
+            set(item.get("column_names", ())) == {
+                "scope_principal", "scope_tenant", "scope_method",
+                "scope_endpoint", "idempotency_key",
+            }
+            for item in inspector.get_unique_constraints("idempotency_records")
+        ):
+            raise RuntimeError("Stamped idempotency_records schema is missing its scoped unique constraint")
 
 
 class AuditRecordEntity(Base):
@@ -317,6 +341,30 @@ class AuditEpochTransitionEntity(Base):
     transition_signature = Column(Text, nullable=False)
     signing_key_id = Column(String(128), nullable=False)
     protocol_version = Column(Integer, nullable=False, default=2)
+
+
+class IdempotencyRecordEntity(Base):
+    """Durable result binding for keyed audit-event retries."""
+    __tablename__ = "idempotency_records"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    scope_principal = Column(String(256), nullable=False)
+    scope_tenant = Column(String(128), nullable=False)
+    scope_method = Column(String(16), nullable=False)
+    scope_endpoint = Column(String(128), nullable=False)
+    idempotency_key = Column(String(128), nullable=False)
+    request_fingerprint = Column(String(64), nullable=False)
+    audit_record_id = Column(Integer, ForeignKey("audit_records.id"), nullable=False)
+    created_at = Column(String(64), nullable=False)
+    expires_at = Column(String(64), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "scope_principal", "scope_tenant", "scope_method",
+            "scope_endpoint", "idempotency_key",
+            name="uq_idempotency_scope_key",
+        ),
+    )
 
 
 class LedgerStateEntity(Base):

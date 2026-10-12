@@ -6,7 +6,9 @@ API routes for Scenario A:
 """
 
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+import hashlib
+import re
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, Header, status
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
@@ -19,12 +21,14 @@ from app.models.schemas import (
 )
 from app.services.verifier import ChainVerificationService
 from app.storage.database import AuditRecordEntity, get_engine, get_session_factory
-from app.storage.repository import AuditLedgerRepository
+from app.storage.repository import AuditLedgerRepository, IdempotencyCommitUnknown
 from app.security import Principal, require_roles
 from app.security import authenticated_principal
 from app.authorization import authorize, authorize_legacy, resolve_tenant, resolve_tenant_by_id
+from app.rate_limit import enforce_authenticated_limit
+from app.crypto.hasher import canonical_json
 
-router = APIRouter(prefix="/audit", tags=["Audit Ledger"])
+router = APIRouter(prefix="/audit", tags=["Audit Ledger"], dependencies=[Depends(enforce_authenticated_limit)])
 
 # Database dependency injection
 def get_db():
@@ -45,6 +49,8 @@ def get_db():
 )
 def append_audit_event(
     event_in: AuditEventCreate,
+    response: Response,
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     principal: Principal = Depends(require_roles("writer")),
     db: Session = Depends(get_db),
 ):
@@ -65,7 +71,45 @@ def append_audit_event(
     if not tenant_id:
         authorize_legacy(principal, "write")
     repo = AuditLedgerRepository(db)
-    record = repo.append_event(event_in, principal)
+    if idempotency_key is None:
+        record = repo.append_event(event_in, principal)
+        return record.to_read_model()
+    if not re.fullmatch(r"[A-Za-z0-9._~-]{16,128}", idempotency_key):
+        raise HTTPException(status_code=400, detail="Invalid Idempotency-Key")
+    if "timestamp" not in event_in.model_fields_set:
+        raise HTTPException(status_code=400, detail="Idempotency-Key requires an explicit timestamp")
+    fingerprint_material = {
+        "eventType": event_in.eventType,
+        "actorId": event_in.actorId,
+        "resourceType": event_in.resourceType,
+        "resourceId": event_in.resourceId,
+        "payload": event_in.payload,
+        "timestamp": event_in.timestamp,
+        "tenantId": event_in.tenantId,
+        "impersonatedActorId": event_in.impersonatedActorId,
+        "delegationReason": event_in.delegationReason,
+    }
+    fingerprint = hashlib.sha256(canonical_json(fingerprint_material).encode("utf-8")).hexdigest()
+    scope_tenant = tenant_id or "__legacy__"
+    try:
+        record, replayed = repo.append_event_idempotent(
+            event_in,
+            principal,
+            scope_principal=principal.credential_id or principal.subject,
+            scope_tenant=scope_tenant,
+            scope_method="POST",
+            scope_endpoint="/audit/events",
+            idempotency_key=idempotency_key,
+            request_fingerprint=fingerprint,
+        )
+    except IdempotencyCommitUnknown as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Append outcome is uncertain; retry with the same Idempotency-Key",
+        ) from exc
+    if replayed:
+        response.status_code = status.HTTP_200_OK
+        response.headers["Idempotent-Replay"] = "true"
     return record.to_read_model()
 
 

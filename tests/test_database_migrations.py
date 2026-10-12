@@ -4,6 +4,9 @@ import pytest
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
+from alembic.command import downgrade
+from alembic.config import Config
+from pathlib import Path
 from app.security import Principal
 from app.services.verifier import ChainVerificationService
 
@@ -71,8 +74,30 @@ def test_fresh_migration_creates_version_and_empty_ledger_state(tmp_path):
     assert {"audit_records", "audit_epoch_transitions", "ledger_state", "alembic_version"}.issubset(tables)
     with engine.connect() as connection:
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-        assert revision == "0001_schema_foundation"
+        assert revision == "0002_idempotency_records"
         assert connection.execute(text("SELECT COUNT(*) FROM ledger_state")).scalar_one() == 0
+
+
+def test_idempotency_downgrade_fails_closed_without_dropping_records(tmp_path):
+    engine = create_engine(f"sqlite:///{(tmp_path / 'downgrade.db').as_posix()}")
+    init_db(engine)
+    with engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO audit_records (sequence_num, event_type, actor_id, resource_type, resource_id, payload_json, timestamp, content_hash, prev_hash, record_hash, is_archived, protocol_version) "
+            "VALUES (1, 'TEST', 'actor', 'TEST', 'resource', '{}', '2026-01-01T00:00:00Z', :hash, :hash, :hash, 0, 1)"
+        ), {"hash": "0" * 64})
+        connection.execute(text(
+            "INSERT INTO idempotency_records (scope_principal, scope_tenant, scope_method, scope_endpoint, idempotency_key, request_fingerprint, audit_record_id, created_at, expires_at) "
+            "VALUES ('actor', '__legacy__', 'POST', '/audit/events', 'downgrade-key', :fingerprint, 1, '2026-01-01T00:00:00Z', '2099-01-01T00:00:00Z')"
+        ), {"fingerprint": "a" * 64})
+    config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
+    with pytest.raises(RuntimeError, match="no automatic destructive downgrade"):
+        with engine.begin() as connection:
+            config.attributes["connection"] = connection
+            downgrade(config, "base")
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT COUNT(*) FROM idempotency_records")).scalar_one() == 1
+        assert connection.execute(text("SELECT COUNT(*) FROM audit_records")).scalar_one() == 1
 
 
 def test_ledger_state_constraints_are_enforced(tmp_path):
@@ -275,7 +300,7 @@ def test_failed_additive_migration_is_retryable_without_history_change(tmp_path,
         assert tuple(before_retry) == tuple(after_retry)
         final_columns = {column["name"] for column in inspect(engine).get_columns("audit_records")}
         assert {"record_signature", "signing_key_id", "tenant_id", "protocol_version"}.issubset(final_columns)
-        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0001_schema_foundation"
+        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0002_idempotency_records"
 
 
 def test_malformed_intermediate_optional_column_is_rejected_before_retry(tmp_path):
