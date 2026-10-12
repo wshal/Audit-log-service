@@ -24,7 +24,7 @@ This service guarantees an append-only, tamper-evident audit ledger:
    - The first record in the chain binds to a defined genesis value (`"0" * 64`).
 3. **Tamper Detection**:
    - `GET /audit/verify` traverses the ledger sequentially.
-   - Detects content mutation, record deletion, reordering, and chain truncation.
+   - Detects content mutation, record deletion, reordering, and inconsistent chain truncation. A validly signed tail truncation requires an independently retained trusted checkpoint.
    - Identifies the exact sequence number and failure category.
 4. **Structured Redaction**:
    - Sensitive fields within `payload` (e.g., SSN, account numbers) can be masked without invalidating the parent block's cryptographic hash.
@@ -150,8 +150,11 @@ for the maintained requirement-to-test mapping. The local default suite uses
 isolated SQLite. PostgreSQL integration infrastructure and tests are under
 `tests/postgres`; the recorded [Gate 3 workflow](https://github.com/wshal/Audit-log-service/actions/runs/38090070659)
 and [postgres-integration job](https://github.com/wshal/Audit-log-service/actions/runs/38090070659/job/114324520174)
-passed. Exact CI test counts were not independently available in the review,
-so no detailed CI count is claimed.
+passed for the earlier Gate 3 checkpoint. PR #5's PostgreSQL evidence is
+recorded in [workflow run 38173087249](https://github.com/wshal/Audit-log-service/actions/runs/38173087249)
+and its [postgres-integration job](https://github.com/wshal/Audit-log-service/actions/runs/38173087249/job/114569645659),
+which tested source commit `23c0658`; that tree was merged as `4b20228`.
+Exact CI test counts were not independently available, so no detailed count is claimed.
 
 See [docs/audit_review.md](docs/audit_review.md) for the implementation audit and hardening record.
 For a copy/paste clean-database walkthrough of every scenario with expected outputs, see [docs/manual_validation.md](docs/manual_validation.md).

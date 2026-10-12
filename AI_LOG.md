@@ -446,3 +446,15 @@ This document records the traceability of AI assistance throughout the developme
   - Added regression tests for mixed-precision boundaries, nested non-finite request values, canonical serialization, and invalid persisted payloads. Updated release documentation to qualify truncation detection and distinguish current versus historical evidence.
 - **Validation**: Focused integrity/canonicalization/scenario tests: **26 passed**. Full default suite after remediation: **142 passed, 7 skipped**, with the existing Starlette/httpx deprecation warning. The configured coverage command passed at **89.04% combined**. PostgreSQL remained unavailable locally; its seven database-backed tests were skipped. Compileall and `git diff --check` passed.
 - **Limitations**: Timestamp filtering currently materializes the scoped candidate set before instant comparison; an indexed derived instant column would require an additive migration and integrity policy. The project remains intentionally non-RFC-8785 canonicalization, and valid signed tail truncation still requires an independent checkpoint.
+
+### Entry 43: PR #5 PostgreSQL evidence and release wording
+- **Date**: 2026-10-12
+- **Merged revision**: `4b20228d847443728208daf53665f96852e04aa9`
+- **CI evidence**: The supplied GitHub Actions evidence shows successful `postgres-integration` execution for source commit `23c0658` (the PR #5 head, whose tree was merged by `4b20228`): [workflow run 38173087249](https://github.com/wshal/Audit-log-service/actions/runs/38173087249), [postgres-integration job](https://github.com/wshal/Audit-log-service/actions/runs/38173087249/job/114569645659). The job completed successfully and included the PostgreSQL migration/concurrency test command from `.github/workflows/tests.yml`.
+- **Evidence boundary**: Exact executed, passed, and skipped PostgreSQL test counts were not visible in the supplied job view and are not invented here. Local execution remains unavailable: the local PostgreSQL suite reports **6 passed, 7 skipped** because no PostgreSQL service is installed.
+- **Documentation**: README wording now qualifies validly signed tail truncation as requiring an independently retained trusted checkpoint. The attestation submission date remains unchanged and requires owner confirmation if a final-release date is needed.
+
+### Entry 44: Submission evidence reconciliation
+- **Date**: 2026-10-12
+- **Changes**: Updated README, audit review, requirements matrix, and engineering summary to distinguish the PR #5 CI source commit `23c0658` from merge commit `4b20228`. Preserved the exact supplied workflow/job links and the absence of detailed PostgreSQL counts. `ATTESTATION.md` was inspected but intentionally unchanged; its `2026-10-07` submission date remains owner-dependent.
+- **Validation**: Documentation-only changes; application tree remains identical to merge commit `4b20228`. `git diff --check`, full tests, coverage, compilation, and local PostgreSQL collection were run; results are reported in the audit response.

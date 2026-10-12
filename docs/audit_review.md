@@ -39,7 +39,7 @@ The new signature and manifest checks intentionally reject records written by th
 
 ## Validation run
 
-Historical validation record: `\.venv\Scripts\python.exe -m pytest -q` completed with **33 passed** at the earlier review checkpoint. The current suite and coverage evidence are maintained in [requirements_test_matrix.md](requirements_test_matrix.md); the latest local default result is **142 passed, 7 skipped**, with the seven skips limited to PostgreSQL database-backed tests unavailable without PostgreSQL/Docker. The recorded [Gate 3 workflow](https://github.com/wshal/Audit-log-service/actions/runs/38090070659) and [postgres-integration job](https://github.com/wshal/Audit-log-service/actions/runs/38090070659/job/114324520174) passed; exact CI test counts were not independently available in the review.
+Historical validation record: `\.venv\Scripts\python.exe -m pytest -q` completed with **33 passed** at the earlier review checkpoint. The current suite and coverage evidence are maintained in [requirements_test_matrix.md](requirements_test_matrix.md); the latest local default result is **142 passed, 7 skipped**, with the seven skips limited to PostgreSQL database-backed tests unavailable without PostgreSQL/Docker. The recorded Gate 3 workflow passed, and PR #5's [workflow](https://github.com/wshal/Audit-log-service/actions/runs/38173087249) and [postgres-integration job](https://github.com/wshal/Audit-log-service/actions/runs/38173087249/job/114569645659) passed for source `23c0658`, merged as `4b20228`; exact CI test counts were not independently available.
 
 ## Phase 1B remediation status
 
