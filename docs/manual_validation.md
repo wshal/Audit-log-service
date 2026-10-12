@@ -80,9 +80,9 @@ Stop the service with `Ctrl+C`, then run:
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-Expected local default result: **159 passed, 7 skipped** (plus one dependency
-deprecation warning). All seven skips are PostgreSQL database-backed tests when
-PostgreSQL/Docker is unavailable locally. The combined flow is
+Latest current working-tree result: **208 passed, 12 skipped** (plus one
+dependency deprecation warning). All twelve skips are PostgreSQL-backed tests
+not selected without PostgreSQL connection configuration. The combined flow is
 `test_end_to_end_ideal_workflow` in `tests/test_security_controls.py`; tenant
 authorization coverage is in `tests/test_tenant_authorization.py`, and startup
 quarantine/direct-entry/recovery coverage is in `tests/test_preflight_quarantine.py`.
@@ -90,13 +90,13 @@ quarantine/direct-entry/recovery coverage is in `tests/test_preflight_quarantine
 For reproducible coverage and compile validation, run:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q --cov=app --cov-branch --cov-report=term-missing --cov-fail-under=85
+.\.venv\Scripts\python.exe -m pytest -q --cov=app --cov-branch --cov-report=term-missing --cov-report=xml --cov-fail-under=85
 .\.venv\Scripts\python.exe -m compileall -q app tests
 ```
 
 The earlier measured run is historical: 91.08% line coverage, 78.76% branch
 coverage, and 88.27% combined coverage. The current local coverage command on
-2026-10-12 measured 86.94% combined coverage (the configured 85% gate passed).
+measured 87.95% combined coverage (the configured 85% gate passed).
 PostgreSQL is intentionally not exercised by these local commands; its
 database-backed tests remain separately selectable under `tests/postgres`.
 The separately selectable integration suite is under `tests/postgres`. Gate 3
@@ -104,6 +104,35 @@ recorded a successful [workflow](https://github.com/wshal/Audit-log-service/acti
 and [postgres-integration job](https://github.com/wshal/Audit-log-service/actions/runs/38090070659/job/114324520174).
 Detailed CI test counts were not independently available in this review, so
 they are not inferred here.
+
+To execute the PostgreSQL suite locally without placing credentials in a URL,
+use the dedicated password file and guarded test database:
+
+```powershell
+$env:PGPASSFILE = "$env:APPDATA\postgresql\pgpass.conf"
+$env:POSTGRES_TEST_DATABASE_URL = "postgresql+psycopg://audit@localhost:5432/audit_test"
+$env:POSTGRES_TEST_REQUIRED = "1"
+
+try {
+    .venv\Scripts\python -m pytest tests/postgres -q -rs
+} finally {
+    Remove-Item Env:PGPASSFILE -ErrorAction SilentlyContinue
+    Remove-Item Env:POSTGRES_TEST_DATABASE_URL -ErrorAction SilentlyContinue
+    Remove-Item Env:POSTGRES_TEST_REQUIRED -ErrorAction SilentlyContinue
+}
+```
+
+The accepted local PostgreSQL 16 run completed **18 passed, zero skipped**.
+This is a separate execution mode and must not be added to the default-suite
+count. It does not substitute for CI validation on a final committed revision.
+
+The Phase B checkpoint contract is exercised by `tests/test_checkpoints.py`.
+`app/checkpoint.py` validates the versioned signed object, and
+`app/services/checkpoint_verifier.py` invokes the authoritative full-ledger
+verifier before returning `MATCHING_PREFIX` or `UNANCHORED_SUFFIX`. These
+results do not provide external storage immutability or prove completeness
+beyond the trusted checkpoint sequence. External publication and retention
+remain unimplemented.
 
 For idempotent appends, send an `Idempotency-Key` header (16–128 safe ASCII
 characters) and an explicit timestamp. The first `POST /audit/events` returns

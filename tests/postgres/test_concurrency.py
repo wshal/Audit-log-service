@@ -3,10 +3,11 @@ import multiprocessing
 import os
 import time
 import traceback
-from queue import Empty
+from multiprocessing.connection import wait as wait_for_connections
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat
+import pytest
 from sqlalchemy import event
 from sqlalchemy.orm import sessionmaker
 
@@ -53,11 +54,76 @@ def _append_in_process(database_url: str, index: int) -> int:
         engine.dispose()
 
 
-def _append_process_entry(database_url: str, index: int, result_queue) -> None:
+def _append_process_entry(database_url: str, index: int, result_connection) -> None:
     try:
-        result_queue.put(("ok", index, _append_in_process(database_url, index)))
-    except BaseException as exc:
-        result_queue.put(("error", index, traceback.format_exc()))
+        result = ("ok", index, _append_in_process(database_url, index))
+    except BaseException:
+        result = ("error", index, traceback.format_exc())
+    result_connection.send(result)
+    result_connection.close()
+
+
+def _collect_worker_results(processes, connections, deadline):
+    """Collect one result per spawned worker through bounded pipe reads."""
+    pending = {connection: index for index, connection in enumerate(connections)}
+    results = {}
+    while pending:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            missing = sorted(pending.values())
+            raise TimeoutError(f"Timed out waiting for worker results: {missing}")
+        ready = wait_for_connections(list(pending), timeout=min(remaining, 0.5))
+        if not ready:
+            if all(not process.is_alive() for process in processes):
+                missing = sorted(pending.values())
+                exit_codes = [process.exitcode for process in processes]
+                raise RuntimeError(
+                    f"Workers exited without results; missing={missing}, exit_codes={exit_codes}"
+                )
+            continue
+        for connection in ready:
+            index = pending.pop(connection)
+            try:
+                status, result_index, value = connection.recv()
+            except EOFError as exc:
+                raise RuntimeError(
+                    f"Worker {index} exited before sending a result "
+                    f"(exit code {processes[index].exitcode})"
+                ) from exc
+            if result_index != index:
+                raise RuntimeError(
+                    f"Worker result identity mismatch: expected {index}, got {result_index}"
+                )
+            if status == "error":
+                raise RuntimeError(f"PostgreSQL append worker {index} failed: {value}")
+            if status != "ok":
+                raise RuntimeError(f"Worker {index} returned unknown status {status!r}")
+            results[index] = value
+    return results
+
+
+def _assert_worker_exit_codes(started):
+    abnormal = [(index, process.exitcode) for index, process in started if process.exitcode != 0]
+    if abnormal:
+        details = ", ".join(f"worker {index}: exit code {code}" for index, code in abnormal)
+        raise RuntimeError(f"PostgreSQL append workers exited abnormally: {details}")
+
+
+def _transport_test_worker(result_connection, index, mode):
+    if mode == "ok":
+        result_connection.send(("ok", index, 42))
+    elif mode == "error":
+        result_connection.send(("error", index, "synthetic worker traceback"))
+    elif mode == "eof":
+        result_connection.close()
+        return
+    elif mode == "timeout":
+        time.sleep(2)
+        return
+    elif mode == "nonzero":
+        result_connection.send(("ok", index, 42))
+        os._exit(7)
+    result_connection.close()
 
 
 def _snapshot_ledger(session):
@@ -112,46 +178,40 @@ def test_postgres_independent_processes_serialize_append_and_preserve_chain(post
     database_url = os.environ["POSTGRES_TEST_DATABASE_URL"]
 
     context = multiprocessing.get_context("spawn")
-    result_queue = context.Queue()
-    processes = [
-        context.Process(target=_append_process_entry, args=(database_url, index, result_queue))
-        for index in range(16)
-    ]
-    deadline = time.monotonic() + 30
-    results = {}
+    workers = []
     started = []
+    deadline = time.monotonic() + 30
     failure = None
     try:
-        for index, process in enumerate(processes):
-            process.start()
-            started.append((index, process))
-        while len(results) < len(processes):
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError("Timed out waiting for PostgreSQL append workers")
+        for index in range(16):
+            parent_connection, child_connection = context.Pipe(duplex=False)
+            process = context.Process(
+                target=_append_process_entry,
+                args=(database_url, index, child_connection),
+            )
             try:
-                status, index, value = result_queue.get(timeout=min(remaining, 0.5))
-            except Empty:
-                if all(not process.is_alive() for process in processes):
-                    break
-                continue
-            if status != "ok":
-                raise RuntimeError(f"PostgreSQL append worker {index} failed: {value}")
-            results[index] = value
-        if len(results) != len(processes):
-            exit_codes = [process.exitcode for process in processes]
-            raise RuntimeError(f"PostgreSQL append workers exited without results: {exit_codes}")
+                process.start()
+            except BaseException:
+                parent_connection.close()
+                raise
+            finally:
+                # The child owns this endpoint after spawn; retaining it in the
+                # parent would prevent EOF from being observable on failure.
+                child_connection.close()
+            workers.append((index, process, parent_connection))
+            started.append((index, process))
+
+        processes = [process for _, process, _ in workers]
+        connections = [connection for _, _, connection in workers]
+        results = _collect_worker_results(processes, connections, deadline)
         sequence_numbers = [results[index] for index in range(len(processes))]
     except BaseException as exc:
         # Preserve the first worker/timeout failure. Cleanup must not replace
-        # its useful traceback with synthetic SIGTERM exit codes.
+        # its useful traceback with synthetic termination exit codes.
         failure = (exc, exc.__traceback__)
     finally:
-        # A queue result is published before the worker exits. On the success
-        # path, give every worker a bounded opportunity to finish naturally;
-        # terminating immediately would manufacture -15 failures. If the
-        # operation already failed, terminate remaining workers so cleanup is
-        # still bounded and cannot hold up the test.
+        # Give workers a bounded opportunity to finish naturally. If the
+        # operation failed, terminate remaining workers so cleanup is bounded.
         cleanup_deadline = time.monotonic() + 5
         for _, process in started:
             remaining = cleanup_deadline - time.monotonic()
@@ -170,16 +230,13 @@ def test_postgres_independent_processes_serialize_append_and_preserve_chain(post
             if process.is_alive():
                 process.kill()
                 process.join(timeout=1)
-        result_queue.cancel_join_thread()
-        result_queue.close()
+        for _, _, connection in workers:
+            connection.close()
 
     if failure is not None:
         raise failure[0].with_traceback(failure[1])
 
-    abnormal = [(index, process.exitcode) for index, process in started if process.exitcode != 0]
-    if abnormal:
-        details = ", ".join(f"worker {index}: exit code {code}" for index, code in abnormal)
-        raise RuntimeError(f"PostgreSQL append workers exited abnormally: {details}")
+    _assert_worker_exit_codes(started)
 
     Session = sessionmaker(autocommit=False, autoflush=False, bind=postgres_engine)
     session = Session()
@@ -200,6 +257,75 @@ def test_postgres_independent_processes_serialize_append_and_preserve_chain(post
         assert verification.intact is True
     finally:
         session.close()
+
+
+def test_worker_transport_propagates_explicit_error():
+    context = multiprocessing.get_context("spawn")
+    parent_connection, child_connection = context.Pipe(duplex=False)
+    process = context.Process(target=_transport_test_worker, args=(child_connection, 0, "error"))
+    process.start()
+    child_connection.close()
+    try:
+        with pytest.raises(RuntimeError, match="synthetic worker traceback"):
+            _collect_worker_results([process], [parent_connection], time.monotonic() + 5)
+        process.join(timeout=5)
+        _assert_worker_exit_codes([(0, process)])
+    finally:
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=1)
+        parent_connection.close()
+
+
+def test_worker_transport_detects_eof_before_result():
+    context = multiprocessing.get_context("spawn")
+    parent_connection, child_connection = context.Pipe(duplex=False)
+    process = context.Process(target=_transport_test_worker, args=(child_connection, 0, "eof"))
+    process.start()
+    child_connection.close()
+    try:
+        with pytest.raises(RuntimeError, match="exited before sending"):
+            _collect_worker_results([process], [parent_connection], time.monotonic() + 5)
+        process.join(timeout=5)
+    finally:
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=1)
+        parent_connection.close()
+
+
+def test_worker_transport_timeout_is_bounded():
+    context = multiprocessing.get_context("spawn")
+    parent_connection, child_connection = context.Pipe(duplex=False)
+    process = context.Process(target=_transport_test_worker, args=(child_connection, 0, "timeout"))
+    process.start()
+    child_connection.close()
+    try:
+        with pytest.raises(TimeoutError, match="Timed out waiting"):
+            _collect_worker_results([process], [parent_connection], time.monotonic() + 0.1)
+    finally:
+        if process.is_alive():
+            process.kill()
+        process.join(timeout=2)
+        parent_connection.close()
+
+
+def test_worker_transport_checks_nonzero_exit_after_success():
+    context = multiprocessing.get_context("spawn")
+    parent_connection, child_connection = context.Pipe(duplex=False)
+    process = context.Process(target=_transport_test_worker, args=(child_connection, 0, "nonzero"))
+    process.start()
+    child_connection.close()
+    try:
+        assert _collect_worker_results([process], [parent_connection], time.monotonic() + 5) == {0: 42}
+        process.join(timeout=5)
+        with pytest.raises(RuntimeError, match=r"worker 0: exit code 7"):
+            _assert_worker_exit_codes([(0, process)])
+    finally:
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=1)
+        parent_connection.close()
 
 
 def test_postgres_append_failure_rolls_back_and_session_remains_usable(postgres_engine, monkeypatch):

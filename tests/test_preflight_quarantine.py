@@ -9,8 +9,11 @@ import subprocess
 import sys
 import json
 import hashlib
+import base64
 from fastapi.testclient import TestClient
 from sqlalchemy import text
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 
 def _set_recovery_token(monkeypatch, token):
@@ -19,7 +22,7 @@ def _set_recovery_token(monkeypatch, token):
 
 import app.main as main_module
 from app.crypto.hasher import GENESIS_PREV_HASH
-from app.crypto.signer import sign_record_hash, signing_key_id
+from app.crypto.signer import _private_key, public_key_ring, sign_record_hash, signing_key_id, verify_record_signature
 from app.models.schemas import AuditEventCreate
 from app.security import Principal
 from app.storage.database import AuditRecordEntity
@@ -45,6 +48,109 @@ def test_fresh_database_is_healthy_and_ready(isolated_test_application):
     with TestClient(main_module.app) as client:
         assert client.get("/health").json()["status"] == "healthy"
         assert client.get("/ready").status_code == 200
+
+
+def _configure_production_signing(monkeypatch, *, ring="default"):
+    """Configure an ephemeral production key and return its public key."""
+    private_key = Ed25519PrivateKey.generate()
+    private_bytes = private_key.private_bytes_raw()
+    public_key = base64.b64encode(
+        private_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+    ).decode("ascii")
+    monkeypatch.setenv("AUDIT_ENV", "production")
+    monkeypatch.setenv("AUDIT_SIGNING_KEY_ID", "production-test")
+    monkeypatch.setenv("AUDIT_SIGNING_PRIVATE_KEY", base64.b64encode(private_bytes).decode("ascii"))
+    if ring == "default":
+        monkeypatch.setenv("AUDIT_SIGNING_PUBLIC_KEYS", json.dumps({"production-test": public_key}))
+    elif ring is None:
+        monkeypatch.delenv("AUDIT_SIGNING_PUBLIC_KEYS", raising=False)
+    else:
+        monkeypatch.setenv("AUDIT_SIGNING_PUBLIC_KEYS", ring)
+    _private_key.cache_clear()
+    public_key_ring.cache_clear()
+    return public_key
+
+
+def _clear_signing_caches():
+    _private_key.cache_clear()
+    public_key_ring.cache_clear()
+
+
+def test_production_missing_signing_key_quarantines_empty_ledger(isolated_test_application, monkeypatch):
+    monkeypatch.setenv("AUDIT_ENV", "production")
+    monkeypatch.delenv("AUDIT_SIGNING_PRIVATE_KEY", raising=False)
+    _clear_signing_caches()
+    try:
+        with TestClient(main_module.app) as client:
+            assert client.get("/health").json()["status"] == "quarantined"
+            assert client.get("/ready").status_code == 503
+    finally:
+        _clear_signing_caches()
+
+
+@pytest.mark.parametrize("ring", ["not-json", json.dumps({"other-key": "not-a-public-key"})])
+def test_production_invalid_public_key_ring_quarantines_empty_ledger(isolated_test_application, monkeypatch, ring):
+    _configure_production_signing(monkeypatch, ring=ring)
+    try:
+        with TestClient(main_module.app) as client:
+            assert client.get("/health").json()["status"] == "quarantined"
+            assert client.get("/ready").status_code == 503
+    finally:
+        _clear_signing_caches()
+
+
+def test_production_active_private_key_must_match_configured_public_key(isolated_test_application, monkeypatch):
+    _configure_production_signing(monkeypatch)
+    different_public_key = base64.b64encode(
+        Ed25519PrivateKey.generate().public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+    ).decode("ascii")
+    monkeypatch.setenv("AUDIT_SIGNING_PUBLIC_KEYS", json.dumps({"production-test": different_public_key}))
+    _clear_signing_caches()
+    try:
+        with TestClient(main_module.app) as client:
+            assert client.get("/health").json()["status"] == "quarantined"
+            assert client.get("/ready").status_code == 503
+    finally:
+        _clear_signing_caches()
+
+
+def test_production_malformed_private_key_quarantines_without_disclosing_value(isolated_test_application, monkeypatch):
+    malformed_value = "not-valid-base64-private-key"
+    monkeypatch.setenv("AUDIT_ENV", "production")
+    monkeypatch.setenv("AUDIT_SIGNING_PRIVATE_KEY", malformed_value)
+    monkeypatch.delenv("AUDIT_SIGNING_PUBLIC_KEYS", raising=False)
+    _clear_signing_caches()
+    try:
+        with TestClient(main_module.app) as client:
+            response = client.get("/health")
+            assert response.json()["status"] == "quarantined"
+            assert client.get("/ready").status_code == 503
+            assert malformed_value not in response.text
+    finally:
+        _clear_signing_caches()
+
+
+def test_valid_production_signing_configuration_is_ready_and_signs(isolated_test_application, monkeypatch):
+    public_key = _configure_production_signing(monkeypatch)
+    try:
+        with TestClient(main_module.app) as client:
+            assert client.get("/health").json()["status"] == "healthy"
+            assert client.get("/ready").status_code == 200
+
+        session = isolated_test_application["session_factory"]()
+        try:
+            record = AuditLedgerRepository(session).append_event(
+                AuditEventCreate(
+                    eventType="V1", actorId="writer", resourceType="CLIENT", resourceId="client",
+                    payload={}, timestamp="2026-01-01T00:00:00Z",
+                ),
+                Principal("writer", frozenset({"writer"}), "production-test", (), True),
+            )
+            assert verify_record_signature(record.record_hash, record.record_signature, public_key)
+        finally:
+            session.close()
+    finally:
+        _clear_signing_caches()
 
 
 def test_malformed_legacy_record_quarantines_and_blocks_audit_routes(isolated_test_application):

@@ -39,11 +39,11 @@ This submission implements a working **Tamper-Evident Audit Log Service prototyp
 
 - **Historical test record**: The earlier implementation checkpoint reported 55 tests; that count is retained as historical context.
 - **Historical test result**: The earlier 93-test checkpoint is retained as historical context.
-- **Current Verified Test Results**: `python -m pytest -q` completed locally on 2026-10-12 with **142 passed, 7 skipped**, and one dependency deprecation warning. All seven skips are PostgreSQL database-backed tests because PostgreSQL/Docker was unavailable locally. The current coverage command measured **89.04% combined**; the earlier 91.08% line / 78.76% branch / 88.27% combined result is historical. CI gates at **85% combined coverage**.
+- **Current uncommitted working-tree validation**: The default coverage command completed locally with **208 passed, 12 skipped**, one dependency deprecation warning, and **87.95% combined coverage**; the 85% gate passed. The twelve skips are PostgreSQL-backed tests not selected without PostgreSQL connection configuration. A separate required-mode PostgreSQL 16 run against `audit_test` completed **18 passed, zero skipped**. These are distinct executions and are not summed. The earlier 91.08% line / 78.76% branch / 88.27% combined result is historical.
 - **PostgreSQL evidence**: PostgreSQL integration infrastructure and tests are under `tests/postgres`. Gate 3 passed, and PR #5's [workflow](https://github.com/wshal/Audit-log-service/actions/runs/38173087249) and [postgres-integration job](https://github.com/wshal/Audit-log-service/actions/runs/38173087249/job/114569645659) passed for source `23c0658`, whose application tree was merged as `4b20228`. Exact PostgreSQL executed/passed/skipped counts were not independently available, so no detailed CI count is claimed.
-- **Backend limitation**: The local default suite exercises isolated SQLite; the CI job supplies the recorded PostgreSQL execution evidence. This does not claim vulnerability-free behavior or independent multi-host coverage.
+- **Backend limitation**: The local default suite exercises isolated SQLite; the separate local PostgreSQL run and recorded CI job provide PostgreSQL evidence. Neither alone establishes vulnerability-free behavior, independent multi-host coverage, or CI validation tied to a final committed revision.
 - **Git History**: Review and commit state are maintained by the repository owner; this working tree contains the reviewed implementation diff.
-- **Attestation**: Formally verified in `ATTESTATION.md`.
+- **Attestation**: `ATTESTATION.md` contains the candidate declaration and submission date, but it does not bind this uncommitted working tree to a final commit or archive digest. Final revision binding and owner confirmation remain outstanding.
 
 ## 5. Phase 1B Authorization and Integrity Remediation
 
@@ -55,3 +55,16 @@ legacy migration tests. Historical V1 records are not rewritten or assigned
 tenants. The V1/V2 physical table and global sequence remain a documented
 trade-off; independently retained checkpoints are still required to detect
 valid signed tail truncation.
+
+## 6. Phase B checkpoint contract
+
+`app/checkpoint.py` defines a strict version-1 checkpoint payload and separate
+Ed25519 checkpoint-signing interface. `app/services/checkpoint_verifier.py`
+validates checkpoint identity and signature, invokes the authoritative full
+ledger verifier, and then returns explicit `MATCHING_PREFIX`,
+`UNANCHORED_SUFFIX`, or fail-closed statuses. The implementation is covered by
+`tests/test_checkpoints.py` and has no production publication or external store.
+It therefore cannot establish immutable external history, latest-checkpoint
+status, export completeness, or detection of valid tail truncation beyond the
+trusted checkpoint. Those require an owner-approved external authority,
+retention, and key-custody design.

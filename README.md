@@ -128,6 +128,15 @@ $env:AUDIT_SIGNING_PUBLIC_KEYS = '{"ed25519-2026-10":"<base64 Ed25519 public key
 $env:AUDIT_CORS_ORIGINS = "https://audit.example.com"
 ```
 
+At startup, before integrity preflight may report the service healthy, the
+application validates the configured Ed25519 private key and public-key ring.
+Missing or malformed production key material, malformed public-key mappings, or
+an active private/public-key mismatch follow the existing quarantine path:
+`/health` reports minimal quarantined status and `/ready` returns `503` without
+disclosing key material. The documented development fallback remains available
+only outside production. This does not implement key rotation, external
+KMS/HSM custody, or runtime signing-configuration reload.
+
 Supported RBAC roles: `reader`, `writer`, `retention_admin`, `privacy_officer`, `exporter`, `compliance_reviewer`, and `admin`. Administrator privileges do not bypass tenant isolation or actor-attribution rules, and do not replace the explicit legacy-access or legacy-PII capabilities required for V1 operations.
 
 API abuse controls are configurable with `AUDIT_RATE_LIMIT_CAPACITY`,
@@ -136,7 +145,9 @@ implementation bounds unauthenticated `/audit` traffic by client address and
 authenticated traffic by credential identity and operation. It is process-local;
 multi-worker or multi-instance deployments require a shared limiter to claim a
 global quota. The limiter returns generic HTTP 429 responses and does not log
-keys or digests. `POST /audit/events` supports a durable `Idempotency-Key`
+keys or digests. The application rejects request bodies larger than 256 KiB
+with HTTP 413 before route parsing; deployments should enforce a compatible
+proxy limit as defense in depth. `POST /audit/events` supports a durable `Idempotency-Key`
 header (16–128 safe ASCII characters); keyed requests require an explicit
 timestamp. The key and canonical request fingerprint are committed atomically
 with the event and ledger state, and a replay returns HTTP 200 with
@@ -146,12 +157,13 @@ expired-key cleanup is an explicit maintenance operation.
 ### 2. Run Test Suite
 ```bash
 python -m pytest -q
-python -m pytest -q --cov=app --cov-branch --cov-report=term-missing --cov-fail-under=85
+python -m pytest -q --cov=app --cov-branch --cov-report=term-missing --cov-report=xml --cov-fail-under=85
 python -m compileall -q app tests
 ```
-The current local suite contains **159 passed, 7 skipped** tests (including
-configuration failure regressions). The seven skips are PostgreSQL
-database-backed tests because PostgreSQL/Docker was unavailable locally. They
+The latest current working-tree run contains **208 passed, 12 skipped** tests
+(including configuration failure regressions). The twelve skips are PostgreSQL
+database-backed tests because this default invocation has no PostgreSQL
+connection configuration. They
 validate:
 - Append-only write & hash chain linking
 - Multi-parameter indexed querying
@@ -165,8 +177,8 @@ validate:
 - Regulatory compliance reporting and anomaly detection
 - API authentication/role enforcement, Ed25519 record signatures, offline signature verification, lifecycle-manifest witnesses, and archival-state tamper detection
 
-Coverage is measured with `pytest-cov`: the current local run on 2026-10-12 is
-86.94% combined coverage (the earlier 91.08% line / 78.76% branch / 88.27%
+Coverage is measured with `pytest-cov`: the latest current working-tree run is
+87.95% combined coverage (the earlier 91.08% line / 78.76% branch / 88.27%
 combined measurement is retained as historical evidence). CI enforces an
 85% combined threshold. See [docs/requirements_test_matrix.md](docs/requirements_test_matrix.md)
 for the maintained requirement-to-test mapping. The local default suite uses
@@ -178,6 +190,20 @@ recorded in [workflow run 38173087249](https://github.com/wshal/Audit-log-servic
 and its [postgres-integration job](https://github.com/wshal/Audit-log-service/actions/runs/38173087249/job/114569645659),
 which tested source commit `23c0658`; that tree was merged as `4b20228`.
 Exact CI test counts were not independently available, so no detailed count is claimed.
+Separately, the accepted local PostgreSQL 16 required-mode execution ran
+`tests/postgres` against the guarded `audit_test` database: **18 passed, zero
+skipped**. It is a separate invocation and must not be added to the default
+suite count.
+
+The current Phase B checkpoint contract is implemented in `app/checkpoint.py`
+and `app/services/checkpoint_verifier.py`, with focused coverage in
+`tests/test_checkpoints.py`. It validates a version-1 signed checkpoint and
+invokes the authoritative full-ledger verifier before returning
+`MATCHING_PREFIX` or `UNANCHORED_SUFFIX`. These statuses do not provide
+external storage immutability, latest-checkpoint proof, export-completeness
+proof, or detection of valid tail truncation beyond the available trusted
+checkpoint. Checkpoint publication, immutable external storage, key custody,
+and outage policy remain unimplemented design decisions.
 
 See [docs/audit_review.md](docs/audit_review.md) for the implementation audit and hardening record.
 For a copy/paste clean-database walkthrough of every scenario with expected outputs, see [docs/manual_validation.md](docs/manual_validation.md).
