@@ -10,7 +10,7 @@
 - **PR #7 source revision**: `76e93211137e02d222d320757dab8a5e1f635bbc`
 - **Merged `main` revision**: `d21195c7550bc747e6130b1630d7e721ffe80540`
 - **Committed code scope**: authorization, integrity and recovery hardening; PostgreSQL migration, allocator, concurrency, rollback, checkpoint, credential, idempotency, rate-limit, and request-boundary work present in merged `main`.
-- **Current evidence scope**: the endpoint inventory, threat model, release-gap register, and attestation are committed in `a7b89cc`; the later Prompt 24 rate-limit contract documentation remains uncommitted. Neither set of documentation changes is represented by the older archive digest for `d21195c`.
+- **Current evidence scope**: the endpoint inventory, threat model, release-gap register, Prompt 24 rate-limit contract documentation, and prior attestation are committed in `3e5d242`; this digest metadata is the intended second, metadata-only commit and is not part of the `3e5d242` archive.
 
 ## Dates and sign-off
 
@@ -22,18 +22,20 @@
 ## Artifact identity
 
 The code revision being attested is merged `main` revision
-`d21195c7550bc747e6130b1630d7e721ffe80540`. A deterministic Git archive of
-that revision was generated with `git archive --format=tar HEAD` and hashed
+`d21195c7550bc747e6130b1630d7e721ffe80540`. The documentation baseline is
+commit `3e5d2428fc448d7a5296fb6b299a6202c99b3aee`. A deterministic Git archive
+of that first documentation commit was generated with
+`git archive --format=tar 3e5d2428fc448d7a5296fb6b299a6202c99b3aee` and hashed
 with SHA-256. Repeating the command produced the same digest:
 
-- **Artifact**: Git archive TAR of `d21195c7550bc747e6130b1630d7e721ffe80540`
-- **SHA-256**: `46a2ba4244a1a3adbbb5d863558ecc335384fd7fdd91058de68f3691040651a4`
-- **Reproducibility check**: two independently generated archives, 655,360 bytes each, matched byte-for-byte.
+- **Artifact**: Git archive TAR of `3e5d2428fc448d7a5296fb6b299a6202c99b3aee`
+- **SHA-256**: `a764ab11935917b6f55a7d28360735f4a6ef69580f78309bea65d1d0c3e95c14`
+- **Archive size**: 686,080 bytes
+- **Reproducibility check**: two independently generated archives matched byte-for-byte.
 
-This digest covers the specified committed `d21195c` tree only. The later
-documentation changes in `a7b89cc` and the current uncommitted Prompt 24
-updates are not included and must not be represented as covered by this
-digest.
+This digest identifies the first documentation commit's archive only. The
+second commit contains this digest metadata and is deliberately not represented
+as covered by the digest, avoiding a circular archive update.
 
 ## Candidate declaration
 
