@@ -22,6 +22,7 @@ from app.storage.database import get_engine, get_session_factory, init_db, initi
 from app.security import Principal
 from app.services.verifier import ChainVerificationService
 from app.runtime_state import get_state, set_state, preflight_scope
+from app.rate_limit import enforce_ip_limit
 
 # Engine and session creation
 engine = get_engine(settings.DATABASE_URL)
@@ -256,6 +257,13 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
 async def quarantine_gate(request: Request, call_next):
     if request.url.path.startswith("/audit") and get_state() != "healthy":
         return JSONResponse(status_code=503, content={"detail": "Audit service is not ready"})
+    if request.url.path.startswith("/audit"):
+        try:
+            enforce_ip_limit(request)
+        except Exception as exc:
+            if getattr(exc, "status_code", None) == 429:
+                return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded"})
+            raise
     return await call_next(request)
 
 # Enable CORS for frontend/dashboard access

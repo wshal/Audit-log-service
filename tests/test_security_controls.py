@@ -1,6 +1,11 @@
 """End-to-end tests for authentication, signatures, export, and lifecycle integrity."""
 
 import pytest
+import hashlib
+import json
+import multiprocessing
+import os
+from datetime import datetime, timezone, timedelta
 from fastapi.testclient import TestClient
 
 from app.crypto.signer import _private_key, public_key_b64, public_key_ring, verify_record_signature
@@ -11,6 +16,248 @@ from app.models.schemas import ViolationType
 from app.security import _credentials
 from app.security import authenticated_principal
 from app.storage.database import AuditRecordEntity, LedgerStateEntity
+from app.credential_store import acknowledge_delivery, activate, provision, revoke, rotate
+from app.credential_store import CredentialAuthorityError, _operator_lock
+from app.credential_store import load_manifest
+
+
+def _manifest_auth_worker(path, token, result_queue):
+    os.environ["AUDIT_CREDENTIAL_MANIFEST"] = path
+    from app.credential_store import authenticate
+    result_queue.put(authenticate(token) is not None)
+
+
+def _provision_worker(path, worker_id, result_queue):
+    os.environ["AUDIT_CREDENTIAL_MANIFEST"] = path
+    from app.credential_store import provision
+    try:
+        provision(f"worker-{worker_id}", ["reader"], expires_at="2099-01-01T00:00:00Z", credential_id=f"worker-{worker_id}")
+        result_queue.put((worker_id, "ok"))
+    except BaseException as exc:
+        result_queue.put((worker_id, type(exc).__name__))
+
+
+def _rotate_or_revoke_worker(path, operation, result_queue):
+    os.environ["AUDIT_CREDENTIAL_MANIFEST"] = path
+    from app.credential_store import revoke, rotate
+    try:
+        if operation == "revoke":
+            revoke("shared")
+        else:
+            rotate("shared", "worker", ["reader"], expires_at="2099-01-01T00:00:00Z", replacement_id="replacement")
+        result_queue.put((operation, "ok"))
+    except BaseException as exc:
+        result_queue.put((operation, type(exc).__name__))
+
+
+def _manifest(path, *, status="active", expires=None, credential_id="cred-1", token="manifest-secret"):
+    expires = expires or (datetime.now(timezone.utc) + timedelta(days=1)).isoformat().replace("+00:00", "Z")
+    path.write_text(json.dumps({
+        "schemaVersion": 1, "manifestVersion": 1,
+        "credentials": {credential_id: {
+            "subject": "manifest-user", "digest": hashlib.sha256(token.encode()).hexdigest(),
+            "status": status, "issuedAt": "2026-01-01T00:00:00Z", "expiresAt": expires,
+            "roles": ["reader"], "tenantGrants": [],
+        }},
+    }), encoding="utf-8")
+    return token
+
+
+def test_manifest_active_credential_authenticates(monkeypatch, tmp_path):
+    token = _manifest(tmp_path / "credentials.json")
+    monkeypatch.setenv("AUDIT_CREDENTIAL_MANIFEST", str(tmp_path / "credentials.json"))
+    with TestClient(app) as authenticated:
+        assert authenticated.get("/audit/events", headers={"X-API-Key": token}).status_code == 200
+
+
+@pytest.mark.parametrize("status", ["revoked", "superseded"])
+def test_manifest_inactive_credentials_return_401(monkeypatch, tmp_path, status):
+    token = _manifest(tmp_path / "credentials.json", status=status)
+    monkeypatch.setenv("AUDIT_CREDENTIAL_MANIFEST", str(tmp_path / "credentials.json"))
+    with TestClient(app) as authenticated:
+        response = authenticated.get("/audit/events", headers={"X-API-Key": token})
+    assert response.status_code == 401
+    assert token not in response.text
+
+
+def test_manifest_expired_and_unknown_credentials_return_401(monkeypatch, tmp_path):
+    path = tmp_path / "credentials.json"
+    expired = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat().replace("+00:00", "Z")
+    token = _manifest(path, expires=expired)
+    monkeypatch.setenv("AUDIT_CREDENTIAL_MANIFEST", str(path))
+    with TestClient(app) as authenticated:
+        assert authenticated.get("/audit/events", headers={"X-API-Key": token}).status_code == 401
+        assert authenticated.get("/audit/events", headers={"X-API-Key": "unknown"}).status_code == 401
+
+
+def test_expiry_is_derived_and_rewrites_keep_manifest_valid(monkeypatch, tmp_path):
+    path = tmp_path / "credentials.json"
+    monkeypatch.setenv("AUDIT_CREDENTIAL_MANIFEST", str(path))
+    expired = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat().replace("+00:00", "Z")
+    expired_token = _manifest(path, expires=expired, credential_id="expired", token="expired-secret")
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["credentials"]["current"] = {
+        "subject": "current", "digest": hashlib.sha256(b"current-secret").hexdigest(),
+        "status": "active", "issuedAt": "2026-01-01T00:00:00Z",
+        "expiresAt": "2099-01-01T00:00:00Z", "roles": ["reader"], "tenantGrants": [],
+    }
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    # Loading and authenticating must not rewrite active to an unsupported
+    # persisted `expired` state.
+    assert load_manifest()["credentials"]["expired"]["status"] == "active"
+    assert authenticate_for_test(expired_token) is None
+    revoke("expired")
+    staged = rotate("current", "current", ["reader"], expires_at="2099-01-01T00:00:00Z", replacement_id="replacement")
+    assert staged
+    rewritten = load_manifest()
+    assert rewritten["credentials"]["expired"]["status"] == "revoked"
+    assert rewritten["credentials"]["current"]["status"] == "active"
+    assert rewritten["credentials"]["replacement"]["status"] == "staged"
+
+
+def test_manifest_missing_or_malformed_production_authority_returns_503(monkeypatch, tmp_path):
+    path = tmp_path / "credentials.json"
+    monkeypatch.setenv("AUDIT_ENV", "production")
+    monkeypatch.setenv("AUDIT_CREDENTIAL_MANIFEST", str(path))
+    with TestClient(app) as authenticated:
+        assert authenticated.get("/audit/events", headers={"X-API-Key": "anything"}).status_code == 503
+    path.write_text("not-json", encoding="utf-8")
+    with TestClient(app) as authenticated:
+        assert authenticated.get("/audit/events", headers={"X-API-Key": "anything"}).status_code == 503
+
+
+def test_manifest_authentication_logs_do_not_contain_secret_or_digest(monkeypatch, tmp_path, caplog):
+    token = _manifest(tmp_path / "credentials.json")
+    monkeypatch.setenv("AUDIT_CREDENTIAL_MANIFEST", str(tmp_path / "credentials.json"))
+    with caplog.at_level("INFO", logger="audit.security"), TestClient(app) as authenticated:
+        assert authenticated.get("/audit/events", headers={"X-API-Key": token + "-wrong"}).status_code == 401
+    assert token not in caplog.text
+    assert hashlib.sha256(token.encode()).hexdigest() not in caplog.text
+
+
+def test_manifest_rotation_and_revocation_are_visible_without_cache(monkeypatch, tmp_path):
+    path = tmp_path / "credentials.json"
+    monkeypatch.setenv("AUDIT_CREDENTIAL_MANIFEST", str(path))
+    first = provision("manifest-user", ["reader"], expires_at="2099-01-01T00:00:00Z", credential_id="first")
+    with TestClient(app) as authenticated:
+        assert authenticated.get("/audit/events", headers={"X-API-Key": first}).status_code == 200
+    replacement = rotate("first", "manifest-user", ["reader"], expires_at="2099-01-01T00:00:00Z", replacement_id="second")
+    with TestClient(app) as authenticated:
+        assert authenticated.get("/audit/events", headers={"X-API-Key": first}).status_code == 200
+        assert authenticated.get("/audit/events", headers={"X-API-Key": replacement}).status_code == 401
+    acknowledge_delivery("second")
+    activate("second")
+    with TestClient(app) as authenticated:
+        assert authenticated.get("/audit/events", headers={"X-API-Key": first}).status_code == 401
+        assert authenticated.get("/audit/events", headers={"X-API-Key": replacement}).status_code == 200
+    revoke("second")
+    with TestClient(app) as authenticated:
+        assert authenticated.get("/audit/events", headers={"X-API-Key": replacement}).status_code == 401
+
+
+def test_manifest_revocation_is_visible_to_independent_process(monkeypatch, tmp_path):
+    path = tmp_path / "credentials.json"
+    monkeypatch.setenv("AUDIT_CREDENTIAL_MANIFEST", str(path))
+    token = provision("manifest-user", ["reader"], expires_at="2099-01-01T00:00:00Z", credential_id="worker")
+    revoke("worker")
+    context = multiprocessing.get_context("spawn")
+    result_queue = context.Queue()
+    process = context.Process(target=_manifest_auth_worker, args=(str(path), token, result_queue))
+    process.start()
+    process.join(timeout=10)
+    assert process.exitcode == 0
+    assert result_queue.get(timeout=2) is False
+    result_queue.close()
+
+
+def test_staged_credential_cannot_authenticate_before_delivery_ack(monkeypatch, tmp_path):
+    path = tmp_path / "credentials.json"
+    monkeypatch.setenv("AUDIT_CREDENTIAL_MANIFEST", str(path))
+    first = provision("manifest-user", ["reader"], expires_at="2099-01-01T00:00:00Z", credential_id="first")
+    replacement = rotate("first", "manifest-user", ["reader"], expires_at="2099-01-01T00:00:00Z", replacement_id="second")
+    assert authenticate_for_test(replacement) is None
+    assert authenticate_for_test(first) is not None
+
+
+def authenticate_for_test(token):
+    from app.credential_store import authenticate
+    return authenticate(token)
+
+
+def test_operator_lock_timeout_fails_closed(monkeypatch, tmp_path):
+    path = tmp_path / "credentials.json"
+    monkeypatch.setenv("AUDIT_CREDENTIAL_MANIFEST", str(path))
+    with _operator_lock(path):
+        with pytest.raises(CredentialAuthorityError, match="timed out"):
+            with _operator_lock(path, timeout=0.05):
+                pass
+
+
+def test_concurrent_initial_provisioning_preserves_both_updates(monkeypatch, tmp_path):
+    path = tmp_path / "credentials.json"
+    monkeypatch.setenv("AUDIT_CREDENTIAL_MANIFEST", str(path))
+    context = multiprocessing.get_context("spawn")
+    result_queue = context.Queue()
+    processes = [context.Process(target=_provision_worker, args=(str(path), index, result_queue)) for index in range(2)]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=10)
+    assert all(process.exitcode == 0 for process in processes)
+    assert sorted(result_queue.get(timeout=2) for _ in processes) == [(0, "ok"), (1, "ok")]
+    result_queue.close()
+    assert set(load_manifest_for_test()["credentials"]) == {"worker-0", "worker-1"}
+
+
+def test_concurrent_rotation_and_revocation_do_not_lose_manifest_update(monkeypatch, tmp_path):
+    path = tmp_path / "credentials.json"
+    monkeypatch.setenv("AUDIT_CREDENTIAL_MANIFEST", str(path))
+    provision("shared", ["reader"], expires_at="2099-01-01T00:00:00Z", credential_id="shared")
+    context = multiprocessing.get_context("spawn")
+    result_queue = context.Queue()
+    processes = [
+        context.Process(target=_rotate_or_revoke_worker, args=(str(path), operation, result_queue))
+        for operation in ("rotate", "revoke")
+    ]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=10)
+    assert all(process.exitcode == 0 for process in processes)
+    results = sorted(result_queue.get(timeout=2) for _ in processes)
+    assert {result[0] for result in results} == {"rotate", "revoke"}
+    final = load_manifest_for_test()
+    assert final["credentials"]["shared"]["status"] in {"revoked", "superseded"}
+    if any(result == ("rotate", "ok") for result in results):
+        assert final["credentials"]["replacement"]["status"] == "staged"
+    result_queue.close()
+
+
+def load_manifest_for_test():
+    from app.credential_store import load_manifest
+    return load_manifest()
+
+
+def test_activation_directory_durability_failure_is_ambiguous_after_ack(monkeypatch, tmp_path):
+    path = tmp_path / "credentials.json"
+    monkeypatch.setenv("AUDIT_CREDENTIAL_MANIFEST", str(path))
+    provision("manifest-user", ["reader"], expires_at="2099-01-01T00:00:00Z", credential_id="first")
+    replacement = rotate("first", "manifest-user", ["reader"], expires_at="2099-01-01T00:00:00Z", replacement_id="second")
+    acknowledge_delivery("second")
+    import app.credential_store as store
+    original = store._durable_replace
+
+    def replace_then_fail(target, document):
+        original(target, document)
+        raise OSError("directory fsync failure after replacement")
+
+    monkeypatch.setattr(store, "_durable_replace", replace_then_fail)
+    with pytest.raises(CredentialAuthorityError, match="ambiguous"):
+        activate("second")
+    # The replacement may already be authoritative; this is explicitly an
+    # ambiguous outcome, not an unsafe claim that rollback succeeded.
+    assert authenticate_for_test(replacement) is not None
 
 
 def _event():

@@ -40,7 +40,7 @@ def test_postgres_fresh_migration_and_constraints(postgres_engine):
     assert any(function in reflected_tip_sql for function in ("length", "char_length", "octet_length"))
 
     with postgres_engine.connect() as connection:
-        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0001_schema_foundation"
+        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0002_idempotency_records"
         assert connection.execute(text("SELECT COUNT(*) FROM audit_records")).scalar_one() == 0
 
 

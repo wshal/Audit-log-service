@@ -80,7 +80,7 @@ Stop the service with `Ctrl+C`, then run:
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-Expected local default result: **142 passed, 7 skipped** (plus one dependency
+Expected local default result: **159 passed, 7 skipped** (plus one dependency
 deprecation warning). All seven skips are PostgreSQL database-backed tests when
 PostgreSQL/Docker is unavailable locally. The combined flow is
 `test_end_to_end_ideal_workflow` in `tests/test_security_controls.py`; tenant
@@ -96,7 +96,7 @@ For reproducible coverage and compile validation, run:
 
 The earlier measured run is historical: 91.08% line coverage, 78.76% branch
 coverage, and 88.27% combined coverage. The current local coverage command on
-2026-10-12 measured 89.04% combined coverage (the configured 85% gate passed).
+2026-10-12 measured 86.94% combined coverage (the configured 85% gate passed).
 PostgreSQL is intentionally not exercised by these local commands; its
 database-backed tests remain separately selectable under `tests/postgres`.
 The separately selectable integration suite is under `tests/postgres`. Gate 3
@@ -104,6 +104,13 @@ recorded a successful [workflow](https://github.com/wshal/Audit-log-service/acti
 and [postgres-integration job](https://github.com/wshal/Audit-log-service/actions/runs/38090070659/job/114324520174).
 Detailed CI test counts were not independently available in this review, so
 they are not inferred here.
+
+For idempotent appends, send an `Idempotency-Key` header (16–128 safe ASCII
+characters) and an explicit timestamp. The first `POST /audit/events` returns
+201; an identical retry returns 200 with `Idempotent-Replay: true`; reusing the
+key with a different request returns 409. The key scope and result are stored
+atomically with the ledger append. Expired keys are reusable after explicit
+maintenance cleanup.
 
 If startup is quarantined after repair, set a unique one-time token in
 `AUDIT_QUARANTINE_RECOVERY_TOKEN` for one process start. The token hash and

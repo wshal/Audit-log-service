@@ -5,6 +5,7 @@ Exposes no UPDATE or DELETE operations on core audit logs.
 """
 
 import json
+from datetime import datetime, timedelta, timezone
 from functools import wraps
 from typing import List, Optional, Tuple
 from sqlalchemy import desc, text
@@ -18,11 +19,15 @@ from app.crypto.hasher import (
     compute_record_chain_hash,
 )
 from app.models.schemas import AuditEventCreate, QueryFilters, parse_timestamp
-from app.storage.database import AuditRecordEntity, LedgerStateEntity
+from app.storage.database import AuditRecordEntity, LedgerStateEntity, IdempotencyRecordEntity
 from app.storage.database import AuditEpochTransitionEntity
 from app.crypto.signer import sign_record_hash, signing_key_id
 from app.authorization import authorize, authorize_legacy, require_operation_role, resolve_tenant, resolve_tenant_by_id
 from app.runtime_state import ensure_ready
+
+
+class IdempotencyCommitUnknown(RuntimeError):
+    """The database commit outcome cannot be established by this session."""
 
 
 def _cleanup_append_failure(operation):
@@ -40,6 +45,25 @@ def _cleanup_append_failure(operation):
 class AuditLedgerRepository:
     def __init__(self, db_session: Session):
         self.session = db_session
+
+    @staticmethod
+    def cleanup_expired_idempotency(session: Session, *, now: datetime | None = None, limit: int = 1000) -> int:
+        """Delete expired rows only from an otherwise idle maintenance session."""
+        if session.in_transaction() or session.new or session.dirty or session.deleted:
+            raise RuntimeError("Idempotency cleanup requires an idle maintenance session")
+        instant = (now or datetime.now(timezone.utc)).isoformat().replace("+00:00", "Z")
+        try:
+            rows = session.query(IdempotencyRecordEntity).filter(
+                IdempotencyRecordEntity.expires_at <= instant
+            ).order_by(IdempotencyRecordEntity.id.asc()).limit(max(1, min(limit, 10_000))).all()
+            count = len(rows)
+            for row in rows:
+                session.delete(row)
+            session.commit()
+            return count
+        except BaseException:
+            session.rollback()
+            raise
 
     @staticmethod
     def _expected_state_from_records(session: Session) -> tuple[int, str]:
@@ -148,7 +172,7 @@ class AuditLedgerRepository:
             cls.release_ledger_lock(session)
 
     @_cleanup_append_failure
-    def append_event(self, event_in: AuditEventCreate, principal=None) -> AuditRecordEntity:
+    def append_event(self, event_in: AuditEventCreate, principal=None, *, _before_commit=None, _ambiguous_commit=False) -> AuditRecordEntity:
         """
         Atomically appends an audit record to the ledger.
         Fetches the previous tip of the chain, increments sequence_num,
@@ -236,6 +260,7 @@ class AuditLedgerRepository:
             self.cleanup_failed_transaction(self.session, original)
             raise
 
+        commit_started = False
         try:
             transition = None
             if getattr(event_in, "tenantId", None) and not self.session.query(AuditEpochTransitionEntity).first():
@@ -254,12 +279,105 @@ class AuditLedgerRepository:
                 self.session.add(transition)
             ledger_state.next_sequence = sequence_num + 1
             ledger_state.tip_hash = record_hash
+            self.session.flush()
+            if _before_commit is not None:
+                _before_commit(record_entity)
+            commit_started = True
             self.session.commit()
         except BaseException as original:
+            if _ambiguous_commit and commit_started:
+                self.session.info["ledger_transaction_invalid"] = True
+                self.release_ledger_lock(self.session)
+                raise IdempotencyCommitUnknown(
+                    "Idempotent append commit outcome is unknown; retry with the same key"
+                ) from original
             self.cleanup_failed_transaction(self.session, original)
             raise
         self.release_ledger_lock(self.session)
         return record_entity
+
+    def append_event_idempotent(
+        self,
+        event_in: AuditEventCreate,
+        principal,
+        *,
+        scope_principal: str,
+        scope_tenant: str,
+        scope_method: str,
+        scope_endpoint: str,
+        idempotency_key: str,
+        request_fingerprint: str,
+        retention_hours: int = 24,
+    ) -> tuple[AuditRecordEntity, bool]:
+        """Append once per scoped key; return (record, replayed)."""
+        # Acquire the same ledger lock as ordinary appends before inspecting
+        # idempotency state. This gives SQLite and PostgreSQL one lock order.
+        self.lock_ledger_state(self.session)
+        existing = self.session.query(IdempotencyRecordEntity).filter_by(
+            scope_principal=scope_principal,
+            scope_tenant=scope_tenant,
+            scope_method=scope_method,
+            scope_endpoint=scope_endpoint,
+            idempotency_key=idempotency_key,
+        ).one_or_none()
+        if existing is not None:
+            if existing.request_fingerprint != request_fingerprint:
+                self.cleanup_failed_transaction(self.session, RuntimeError("idempotency key conflict"))
+                from fastapi import HTTPException
+                raise HTTPException(status_code=409, detail="Idempotency key conflicts with a different request")
+            record = self.session.get(AuditRecordEntity, existing.audit_record_id)
+            if record is None:
+                self.cleanup_failed_transaction(self.session, RuntimeError("invalid idempotency result"))
+                raise RuntimeError("Idempotency record references a missing audit record")
+            self.session.rollback()
+            self.release_ledger_lock(self.session)
+            return record, True
+
+        created = datetime.now(timezone.utc)
+        expires = created + timedelta(hours=retention_hours)
+
+        def persist_result(record: AuditRecordEntity) -> None:
+            self.session.add(IdempotencyRecordEntity(
+                scope_principal=scope_principal,
+                scope_tenant=scope_tenant,
+                scope_method=scope_method,
+                scope_endpoint=scope_endpoint,
+                idempotency_key=idempotency_key,
+                request_fingerprint=request_fingerprint,
+                audit_record_id=record.id,
+                created_at=created.isoformat().replace("+00:00", "Z"),
+                expires_at=expires.isoformat().replace("+00:00", "Z"),
+            ))
+
+        try:
+            record = self.append_event(
+                event_in,
+                principal,
+                _before_commit=persist_result,
+                _ambiguous_commit=True,
+            )
+            return record, False
+        except IntegrityError:
+            # The unique constraint is a final defense. The append decorator
+            # has rolled back the failed transaction; inspect the durable row
+            # only after that rollback so the session remains usable.
+            self.session.rollback()
+            self.release_ledger_lock(self.session)
+            existing = self.session.query(IdempotencyRecordEntity).filter_by(
+                scope_principal=scope_principal,
+                scope_tenant=scope_tenant,
+                scope_method=scope_method,
+                scope_endpoint=scope_endpoint,
+                idempotency_key=idempotency_key,
+            ).one_or_none()
+            if existing is not None:
+                if existing.request_fingerprint != request_fingerprint:
+                    from fastapi import HTTPException
+                    raise HTTPException(status_code=409, detail="Idempotency key conflicts with a different request")
+                record = self.session.get(AuditRecordEntity, existing.audit_record_id)
+                if record is not None:
+                    return record, True
+            raise
 
     def query_events(self, filters: QueryFilters, principal=None, tenant_id: str | None = None) -> Tuple[List[AuditRecordEntity], int]:
         """
