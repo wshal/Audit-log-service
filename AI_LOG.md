@@ -1133,3 +1133,21 @@ The warning is the existing Starlette/httpx deprecation warning. PostgreSQL,
 Redis, and Gitleaks were not run locally in this workstream; their CI jobs and
 artifacts must be reviewed for the final revision. The lock files pin versions
 but do not claim package artifact hashes or bit-for-bit reproducible builds.
+
+## Entry 74 - Supply-chain controls verified after merge
+
+**Date:** 2026-10-13
+
+PR #15 (`security/supply-chain-reproducible-builds`) merged as
+`5599a32238f3a7ca798ca2187b17d0d9305d84cf` from source commit
+`3064d879081355af03a0d03a7ad339c8b2059474`. Post-merge workflow run
+`38370008952` tested that exact `main` revision and completed successfully for
+`test`, `postgres-integration`, `rate-limit-integration`,
+`linux-security-controls`, `supply-chain`, and `secret-scan`.
+
+The run uploaded coverage, PostgreSQL, Redis, Linux-security, supply-chain,
+and Gitleaks SARIF artifacts. Its authenticated run summary reports **No leaks
+detected**. Protected artifact downloads were not independently readable from
+the available API session, so exact JUnit pass/skip counts and coverage are
+not recorded as independently verified here. Historical counts remain tied to
+their original revisions and runs.
