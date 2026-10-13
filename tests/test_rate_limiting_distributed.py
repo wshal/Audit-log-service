@@ -82,6 +82,96 @@ def test_shared_active_key_cardinality_is_bounded(redis_limiters):
         bounded._client.delete(key)
 
 
+def _wait_until_expired(client, identities, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    keys = [client._key(identity) for identity in identities]
+    while time.monotonic() < deadline:
+        if all(not client._client.exists(key) for key in keys):
+            return
+        time.sleep(0.02)
+    pytest.fail("Redis rate-limit counters did not expire before the deadline")
+
+
+def test_expired_identities_release_registry_capacity(redis_limiters):
+    first, _ = redis_limiters
+    bounded = RedisRateLimiter(
+        os.environ["AUDIT_RATE_LIMIT_REDIS_URL"],
+        prefix=f"{first._prefix}:expiry",
+        connect_timeout=1.0,
+        pool_size=4,
+        max_keys=2,
+    )
+    identities = ["expired-a", "expired-b"]
+    assert all(bounded.allow(identity, capacity=1, window=1) for identity in identities)
+    assert not bounded.allow("blocked-before-expiry", capacity=1, window=1)
+
+    _wait_until_expired(bounded, identities)
+
+    assert bounded.allow("replacement", capacity=1, window=1)
+    assert int(bounded._client.zcard(bounded._registry())) <= 1
+    for key in bounded._client.scan_iter(match=f"{bounded._prefix}:*"):
+        bounded._client.delete(key)
+
+
+def test_registry_reclaims_capacity_under_identity_churn(redis_limiters):
+    first, _ = redis_limiters
+    bounded = RedisRateLimiter(
+        os.environ["AUDIT_RATE_LIMIT_REDIS_URL"],
+        prefix=f"{first._prefix}:churn",
+        connect_timeout=1.0,
+        pool_size=4,
+        max_keys=2,
+    )
+    for cycle in range(3):
+        identities = [f"churn-{cycle}-a", f"churn-{cycle}-b"]
+        assert all(bounded.allow(identity, capacity=1, window=1) for identity in identities)
+        _wait_until_expired(bounded, identities)
+    assert bounded.allow("churn-replacement", capacity=1, window=1)
+    assert int(bounded._client.zcard(bounded._registry())) <= 1
+    for key in bounded._client.scan_iter(match=f"{bounded._prefix}:*"):
+        bounded._client.delete(key)
+
+
+def test_active_identity_is_not_evicted_during_registry_cleanup(redis_limiters):
+    first, _ = redis_limiters
+    bounded = RedisRateLimiter(
+        os.environ["AUDIT_RATE_LIMIT_REDIS_URL"],
+        prefix=f"{first._prefix}:active",
+        connect_timeout=1.0,
+        pool_size=4,
+        max_keys=2,
+    )
+    assert bounded.allow("active", capacity=2, window=1)
+    assert bounded.allow("other", capacity=1, window=1)
+    assert bounded.allow("active", capacity=2, window=1)
+    assert not bounded.allow("new", capacity=1, window=1)
+    assert int(bounded._client.zcard(bounded._registry())) == 2
+    for key in bounded._client.scan_iter(match=f"{bounded._prefix}:*"):
+        bounded._client.delete(key)
+
+
+def test_legacy_registry_is_migrated_before_admission(redis_limiters):
+    first, _ = redis_limiters
+    bounded = RedisRateLimiter(
+        os.environ["AUDIT_RATE_LIMIT_REDIS_URL"],
+        prefix=f"{first._prefix}:migration",
+        connect_timeout=1.0,
+        pool_size=4,
+        max_keys=1,
+    )
+    legacy_identity = "legacy-active"
+    legacy_key = bounded._key(legacy_identity)
+    bounded._client.set(legacy_key, 1, ex=60)
+    bounded._client.sadd(bounded._legacy_registry(), legacy_key)
+
+    assert not bounded.allow("new-identity", capacity=1, window=60)
+    assert bounded._client.exists(legacy_key)
+    assert bounded._client.zscore(bounded._registry(), legacy_key) is not None
+    assert not bounded._client.exists(bounded._legacy_registry())
+    for key in bounded._client.scan_iter(match=f"{bounded._prefix}:*"):
+        bounded._client.delete(key)
+
+
 def test_expired_shared_window_allows_next_request(redis_limiters):
     first, _ = redis_limiters
     identity = "credential-a:tenant-a:GET:/audit/verify"
