@@ -5,14 +5,47 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
+import re
 import secrets
+import stat
 import tempfile
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+class _LifecycleLogger:
+    """Logger wrapper for sanitized credential lifecycle events."""
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+
+    def _get_logger(self) -> logging.Logger:
+        return logging.getLogger(self._name)
+
+    def info(self, msg: Any, *args: Any, **kwargs: Any) -> None:
+        self._get_logger().info(msg, *args, **kwargs)
+
+    def warning(self, msg: Any, *args: Any, **kwargs: Any) -> None:
+        self._get_logger().warning(msg, *args, **kwargs)
+
+    def error(self, msg: Any, *args: Any, **kwargs: Any) -> None:
+        self._get_logger().error(msg, *args, **kwargs)
+
+    def exception(self, msg: Any, *args: Any, **kwargs: Any) -> None:
+        self._get_logger().exception(msg, *args, **kwargs)
+
+    def debug(self, msg: Any, *args: Any, **kwargs: Any) -> None:
+        self._get_logger().debug(msg, *args, **kwargs)
+
+    def isEnabledFor(self, level: int) -> bool:
+        return self._get_logger().isEnabledFor(level)
+
+
+_credential_logger = _LifecycleLogger("audit.security.credentials")
 
 
 class CredentialAuthorityError(RuntimeError):
@@ -21,6 +54,17 @@ class CredentialAuthorityError(RuntimeError):
 
 class CredentialAuthorityAmbiguousError(CredentialAuthorityError):
     """A manifest replacement occurred but durability could not be confirmed."""
+
+
+def _sanitize_for_log(value: Any, maximum: int = 128) -> str:
+    """Sanitize identifiers to prevent log injection and enforce length bounds."""
+    if not isinstance(value, str):
+        return "unknown"
+    # Replace control characters and newlines with '_'
+    cleaned = re.sub(r"[\x00-\x1f\x7f-\x9f]", "_", value.strip())
+    if not cleaned:
+        return "empty"
+    return cleaned[:maximum]
 
 
 _MAX_CREDENTIAL_ID = 128
@@ -102,9 +146,75 @@ def _validate_tenant_grants(grants: Any) -> None:
                         _validate_resource_values(scope[key], f"tenantGrants.resourceScopes.{key}")
 
 
+def _is_reparse_or_symlink(path: Path, metadata: os.stat_result) -> bool:
+    """Return whether *path* is a link-like filesystem object.
+
+    ``lstat`` is used by the caller so a symlink is never followed during the
+    check.  Windows junctions and other reparse points are identified through
+    ``st_file_attributes`` when that platform exposes it.
+    """
+    if stat.S_ISLNK(metadata.st_mode):
+        return True
+    if os.name == "nt":
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        return bool(getattr(metadata, "st_file_attributes", 0) & reparse_flag)
+    return False
+
+
+def _validate_manifest_path(path: Path, *, allow_missing_manifest: bool) -> Path:
+    """Validate the configured authority path without following links.
+
+    This is a trust-boundary check, not a complete TOCTOU defense: an actor
+    able to rename entries in the parent directory can still race a later
+    open/replace operation.  Deployment ACLs must therefore protect the
+    containing directory.
+    """
+    path_string = os.fspath(path)
+    if not os.path.isabs(path_string):
+        raise CredentialAuthorityError("credential authority path must be absolute")
+    if any(component in {".", ".."} for component in re.split(r"[/\\\\]", path_string)):
+        raise CredentialAuthorityError("credential authority path is not trusted")
+    parent_string = os.path.dirname(path_string)
+    if not os.path.isdir(parent_string):
+        raise CredentialAuthorityError("credential authority path is unavailable")
+
+    drive, tail = os.path.splitdrive(path_string)
+    root = tail[:1] if tail[:1] in {"/", "\\"} else ""
+    current = f"{drive}{root}"
+    components = [part for part in re.split(r"[/\\\\]", tail[len(root):]) if part]
+    for component in components:
+        current = os.path.join(current, component)
+        if not os.path.lexists(current):
+            continue
+        try:
+            metadata = os.lstat(current)
+        except OSError as exc:
+            raise CredentialAuthorityError("credential authority path is unavailable") from exc
+        if _is_reparse_or_symlink(current, metadata):
+            raise CredentialAuthorityError("credential authority path is not trusted")
+        if os.path.normcase(current) == os.path.normcase(path_string):
+            if not stat.S_ISREG(metadata.st_mode):
+                raise CredentialAuthorityError("credential authority path is not a regular file")
+        elif not stat.S_ISDIR(metadata.st_mode):
+            raise CredentialAuthorityError("credential authority path is not a directory")
+
+    lock_path = _lock_path(path)
+    lock_string = os.fspath(lock_path)
+    if os.path.lexists(lock_string):
+        try:
+            lock_metadata = os.lstat(lock_string)
+        except OSError as exc:
+            raise CredentialAuthorityError("credential authority lock is unavailable") from exc
+        if _is_reparse_or_symlink(lock_path, lock_metadata) or not stat.S_ISREG(lock_metadata.st_mode):
+            raise CredentialAuthorityError("credential authority lock is not trusted")
+    return path
+
+
 def _manifest_path() -> Path | None:
     value = os.getenv("AUDIT_CREDENTIAL_MANIFEST", "").strip()
-    return Path(value) if value else None
+    if not value:
+        return None
+    return _validate_manifest_path(Path(value), allow_missing_manifest=True)
 
 
 def _parse_time(value: Any, field: str) -> datetime:
@@ -168,6 +278,7 @@ def load_manifest() -> dict:
     path = _manifest_path()
     if path is None:
         raise CredentialAuthorityError("credential authority is not configured")
+    path = _validate_manifest_path(path, allow_missing_manifest=False)
     try:
         with path.open("r", encoding="utf-8") as stream:
             return _validate_manifest(json.load(stream))
@@ -201,7 +312,7 @@ def _lock_path(path: Path) -> Path:
 @contextmanager
 def _operator_lock(path: Path, timeout: float = 5.0):
     """Acquire a bounded cross-process lock; never delete the lock file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path = _validate_manifest_path(path, allow_missing_manifest=True)
     handle = open(_lock_path(path), "a+b")
     deadline = time.monotonic() + timeout
     acquired = False
@@ -226,11 +337,19 @@ def _operator_lock(path: Path, timeout: float = 5.0):
                 except OSError:
                     time.sleep(0.05)
         if not acquired:
+            _credential_logger.warning(
+                "action=operator_lock outcome=failed_timeout lock_target=%s",
+                _sanitize_for_log(path.name),
+            )
             raise CredentialAuthorityError("credential authority lock acquisition timed out")
         yield
     except CredentialAuthorityError:
         raise
     except (ImportError, OSError) as exc:
+        _credential_logger.error(
+            "action=operator_lock outcome=failed_unavailable lock_target=%s",
+            _sanitize_for_log(path.name),
+        )
         raise CredentialAuthorityError("credential authority lock unavailable") from exc
     finally:
         if acquired:
@@ -248,6 +367,7 @@ def _operator_lock(path: Path, timeout: float = 5.0):
 
 
 def _durable_replace(path: Path, document: dict) -> None:
+    path = _validate_manifest_path(path, allow_missing_manifest=True)
     _validate_manifest(document)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent), text=True)
@@ -307,118 +427,283 @@ def _new_entry(subject: str, roles: list[str], token: str, expires_at: str, *, s
 
 def provision(subject: str, roles: list[str], *, tenant_grants: list[dict] | None = None,
               expires_at: str, credential_id: str | None = None) -> str:
+    safe_subject = _sanitize_for_log(subject, _MAX_SUBJECT)
+    safe_id = _sanitize_for_log(credential_id, _MAX_CREDENTIAL_ID) if credential_id else "auto"
     path = _manifest_path()
     if path is None:
+        _credential_logger.error(
+            "action=credential_provisioned outcome=failed_unconfigured subject=%s", safe_subject
+        )
         raise CredentialAuthorityError("credential authority is not configured")
     token = generate_token()
     credential_id = credential_id or f"credential-{secrets.token_hex(8)}"
-    _bounded_text(credential_id, "credentialId", _MAX_CREDENTIAL_ID)
-    with _operator_lock(path):
-        document = _read_for_operator(path)
-        if credential_id in document["credentials"]:
-            raise CredentialAuthorityError("credential identifier already exists")
-        document["manifestVersion"] += 1
-        document["credentials"][credential_id] = _new_entry(
-            subject, roles, token, expires_at, status="active", tenant_grants=tenant_grants
+    safe_id = _sanitize_for_log(credential_id, _MAX_CREDENTIAL_ID)
+    try:
+        _bounded_text(credential_id, "credentialId", _MAX_CREDENTIAL_ID)
+        with _operator_lock(path):
+            document = _read_for_operator(path)
+            if credential_id in document["credentials"]:
+                _credential_logger.warning(
+                    "action=credential_provisioned outcome=failed_duplicate_identifier credential_id=%s subject=%s",
+                    safe_id, safe_subject,
+                )
+                raise CredentialAuthorityError("credential identifier already exists")
+            document["manifestVersion"] += 1
+            document["credentials"][credential_id] = _new_entry(
+                subject, roles, token, expires_at, status="active", tenant_grants=tenant_grants
+            )
+            try:
+                _durable_replace(path, document)
+            except CredentialAuthorityAmbiguousError:
+                _credential_logger.error(
+                    "action=credential_provisioned outcome=ambiguous_persistence credential_id=%s subject=%s",
+                    safe_id, safe_subject,
+                )
+                raise
+            except Exception as exc:
+                _credential_logger.error(
+                    "action=credential_provisioned outcome=failed_persistence credential_id=%s subject=%s",
+                    safe_id, safe_subject,
+                )
+                raise CredentialAuthorityError("credential provisioning persistence failed") from exc
+    except (CredentialAuthorityError, CredentialAuthorityAmbiguousError):
+        raise
+    except Exception:
+        _credential_logger.error(
+            "action=credential_provisioned outcome=failed_validation credential_id=%s subject=%s",
+            safe_id, safe_subject,
         )
-        try:
-            _durable_replace(path, document)
-        except CredentialAuthorityAmbiguousError:
-            raise
-        except Exception as exc:
-            raise CredentialAuthorityError("credential provisioning persistence failed") from exc
+        raise
+
+    _credential_logger.info(
+        "action=credential_provisioned outcome=success credential_id=%s subject=%s",
+        safe_id, safe_subject,
+    )
     return token
 
 
 def rotate(credential_id: str, subject: str, roles: list[str], *, expires_at: str,
            tenant_grants: list[dict] | None = None, replacement_id: str | None = None) -> str:
     """Stage a replacement; it cannot authenticate until acknowledged and activated."""
+    safe_old_id = _sanitize_for_log(credential_id, _MAX_CREDENTIAL_ID)
+    safe_subject = _sanitize_for_log(subject, _MAX_SUBJECT)
+    safe_replacement_id = _sanitize_for_log(replacement_id, _MAX_CREDENTIAL_ID) if replacement_id else "auto"
     path = _manifest_path()
     if path is None:
+        _credential_logger.error(
+            "action=credential_rotated outcome=failed_unconfigured credential_id=%s", safe_old_id
+        )
         raise CredentialAuthorityError("credential authority is not configured")
     token = generate_token()
     replacement_id = replacement_id or f"credential-{secrets.token_hex(8)}"
-    _bounded_text(replacement_id, "credentialId", _MAX_CREDENTIAL_ID)
-    with _operator_lock(path):
-        document = load_manifest()
-        old = document["credentials"].get(credential_id)
-        if old is None or old["status"] != "active":
-            raise CredentialAuthorityError("credential identifier is not active")
-        if replacement_id in document["credentials"]:
-            raise CredentialAuthorityError("replacement identifier already exists")
-        document["manifestVersion"] += 1
-        document["credentials"][replacement_id] = _new_entry(
-            subject, roles, token, expires_at, status="staged", tenant_grants=tenant_grants
+    safe_replacement_id = _sanitize_for_log(replacement_id, _MAX_CREDENTIAL_ID)
+    try:
+        _bounded_text(replacement_id, "credentialId", _MAX_CREDENTIAL_ID)
+        with _operator_lock(path):
+            document = load_manifest()
+            old = document["credentials"].get(credential_id)
+            if old is None or old["status"] != "active":
+                _credential_logger.warning(
+                    "action=credential_rotated outcome=failed_target_not_active credential_id=%s replacement_id=%s",
+                    safe_old_id, safe_replacement_id,
+                )
+                raise CredentialAuthorityError("credential identifier is not active")
+            if replacement_id in document["credentials"]:
+                _credential_logger.warning(
+                    "action=credential_rotated outcome=failed_duplicate_identifier credential_id=%s replacement_id=%s",
+                    safe_old_id, safe_replacement_id,
+                )
+                raise CredentialAuthorityError("replacement identifier already exists")
+            document["manifestVersion"] += 1
+            document["credentials"][replacement_id] = _new_entry(
+                subject, roles, token, expires_at, status="staged", tenant_grants=tenant_grants
+            )
+            try:
+                _durable_replace(path, document)
+            except CredentialAuthorityAmbiguousError:
+                _credential_logger.error(
+                    "action=credential_rotated outcome=ambiguous_persistence credential_id=%s replacement_id=%s",
+                    safe_old_id, safe_replacement_id,
+                )
+                raise
+            except Exception as exc:
+                _credential_logger.error(
+                    "action=credential_rotated outcome=failed_persistence credential_id=%s replacement_id=%s",
+                    safe_old_id, safe_replacement_id,
+                )
+                raise CredentialAuthorityError("credential staging persistence failed") from exc
+    except (CredentialAuthorityError, CredentialAuthorityAmbiguousError):
+        raise
+    except Exception:
+        _credential_logger.error(
+            "action=credential_rotated outcome=failed_validation credential_id=%s replacement_id=%s",
+            safe_old_id, safe_replacement_id,
         )
-        try:
-            _durable_replace(path, document)
-        except CredentialAuthorityAmbiguousError:
-            raise
-        except Exception as exc:
-            raise CredentialAuthorityError("credential staging persistence failed") from exc
+        raise
+
+    _credential_logger.info(
+        "action=credential_rotated outcome=success credential_id=%s replacement_id=%s subject=%s",
+        safe_old_id, safe_replacement_id, safe_subject,
+    )
     return token
 
 
 def acknowledge_delivery(credential_id: str) -> None:
+    safe_id = _sanitize_for_log(credential_id, _MAX_CREDENTIAL_ID)
     path = _manifest_path()
     if path is None:
+        _credential_logger.error(
+            "action=credential_delivery_acknowledged outcome=failed_unconfigured credential_id=%s", safe_id
+        )
         raise CredentialAuthorityError("credential authority is not configured")
-    with _operator_lock(path):
-        document = load_manifest()
-        entry = document["credentials"].get(credential_id)
-        if entry is None or entry["status"] != "staged":
-            raise CredentialAuthorityError("credential is not staged")
-        entry["deliveryAcknowledged"] = True
-        document["manifestVersion"] += 1
-        try:
-            _durable_replace(path, document)
-        except CredentialAuthorityAmbiguousError:
-            raise
-        except Exception as exc:
-            raise CredentialAuthorityError("credential delivery acknowledgement persistence failed") from exc
+    try:
+        with _operator_lock(path):
+            document = load_manifest()
+            entry = document["credentials"].get(credential_id)
+            if entry is None or entry["status"] != "staged":
+                _credential_logger.warning(
+                    "action=credential_delivery_acknowledged outcome=failed_not_staged credential_id=%s", safe_id
+                )
+                raise CredentialAuthorityError("credential is not staged")
+            entry["deliveryAcknowledged"] = True
+            document["manifestVersion"] += 1
+            try:
+                _durable_replace(path, document)
+            except CredentialAuthorityAmbiguousError:
+                _credential_logger.error(
+                    "action=credential_delivery_acknowledged outcome=ambiguous_persistence credential_id=%s", safe_id
+                )
+                raise
+            except Exception as exc:
+                _credential_logger.error(
+                    "action=credential_delivery_acknowledged outcome=failed_persistence credential_id=%s", safe_id
+                )
+                raise CredentialAuthorityError("credential delivery acknowledgement persistence failed") from exc
+    except (CredentialAuthorityError, CredentialAuthorityAmbiguousError):
+        raise
+    except Exception:
+        _credential_logger.error(
+            "action=credential_delivery_acknowledged outcome=failed_unexpected credential_id=%s", safe_id
+        )
+        raise
+
+    _credential_logger.info(
+        "action=credential_delivery_acknowledged outcome=success credential_id=%s", safe_id
+    )
 
 
 def activate(credential_id: str) -> None:
     """Commit delivery-acknowledged activation and old-version supersession."""
+    safe_id = _sanitize_for_log(credential_id, _MAX_CREDENTIAL_ID)
     path = _manifest_path()
     if path is None:
+        _credential_logger.error(
+            "action=credential_activated outcome=failed_unconfigured credential_id=%s", safe_id
+        )
         raise CredentialAuthorityError("credential authority is not configured")
-    with _operator_lock(path):
-        document = load_manifest()
-        entry = document["credentials"].get(credential_id)
-        if entry is None:
-            raise CredentialAuthorityError("credential identifier not found")
-        if entry["status"] == "active":
-            return
-        if entry["status"] != "staged" or not entry.get("deliveryAcknowledged", False):
-            raise CredentialAuthorityError("credential delivery acknowledgement is required")
-        entry["status"] = "active"
-        for other_id, other in document["credentials"].items():
-            if other_id != credential_id and other.get("subject") == entry.get("subject") and other.get("status") == "active":
-                other["status"] = "superseded"
-        document["manifestVersion"] += 1
-        try:
-            _durable_replace(path, document)
-        except CredentialAuthorityAmbiguousError:
-            raise
-        except Exception as exc:
-            raise CredentialAuthorityError("credential activation persistence failed") from exc
+    safe_subject = "unknown"
+    already_active = False
+    try:
+        with _operator_lock(path):
+            document = load_manifest()
+            entry = document["credentials"].get(credential_id)
+            if entry is None:
+                _credential_logger.warning(
+                    "action=credential_activated outcome=failed_not_found credential_id=%s", safe_id
+                )
+                raise CredentialAuthorityError("credential identifier not found")
+            safe_subject = _sanitize_for_log(entry.get("subject", "unknown"), _MAX_SUBJECT)
+            if entry["status"] == "active":
+                already_active = True
+                _credential_logger.info(
+                    "action=credential_activated outcome=already_active credential_id=%s subject=%s",
+                    safe_id, safe_subject,
+                )
+                return
+            if entry["status"] != "staged" or not entry.get("deliveryAcknowledged", False):
+                _credential_logger.warning(
+                    "action=credential_activated outcome=failed_not_acknowledged credential_id=%s subject=%s",
+                    safe_id, safe_subject,
+                )
+                raise CredentialAuthorityError("credential delivery acknowledgement is required")
+            entry["status"] = "active"
+            for other_id, other in document["credentials"].items():
+                if other_id != credential_id and other.get("subject") == entry.get("subject") and other.get("status") == "active":
+                    other["status"] = "superseded"
+            document["manifestVersion"] += 1
+            try:
+                _durable_replace(path, document)
+            except CredentialAuthorityAmbiguousError:
+                _credential_logger.error(
+                    "action=credential_activated outcome=ambiguous_persistence credential_id=%s subject=%s",
+                    safe_id, safe_subject,
+                )
+                raise
+            except Exception as exc:
+                _credential_logger.error(
+                    "action=credential_activated outcome=failed_persistence credential_id=%s subject=%s",
+                    safe_id, safe_subject,
+                )
+                raise CredentialAuthorityError("credential activation persistence failed") from exc
+    except (CredentialAuthorityError, CredentialAuthorityAmbiguousError):
+        raise
+    except Exception:
+        _credential_logger.error(
+            "action=credential_activated outcome=failed_unexpected credential_id=%s", safe_id
+        )
+        raise
+
+    if not already_active:
+        _credential_logger.info(
+            "action=credential_activated outcome=success credential_id=%s subject=%s",
+            safe_id, safe_subject,
+        )
 
 
 def revoke(credential_id: str) -> None:
+    safe_id = _sanitize_for_log(credential_id, _MAX_CREDENTIAL_ID)
     path = _manifest_path()
     if path is None:
+        _credential_logger.error(
+            "action=credential_revoked outcome=failed_unconfigured credential_id=%s", safe_id
+        )
         raise CredentialAuthorityError("credential authority is not configured")
-    with _operator_lock(path):
-        document = load_manifest()
-        entry = document["credentials"].get(credential_id)
-        if entry is None:
-            raise CredentialAuthorityError("credential identifier not found")
-        entry["status"] = "revoked"
-        document["manifestVersion"] += 1
-        try:
-            _durable_replace(path, document)
-        except CredentialAuthorityAmbiguousError:
-            raise
-        except Exception as exc:
-            raise CredentialAuthorityError("credential revocation persistence failed") from exc
+    safe_subject = "unknown"
+    try:
+        with _operator_lock(path):
+            document = load_manifest()
+            entry = document["credentials"].get(credential_id)
+            if entry is None:
+                _credential_logger.warning(
+                    "action=credential_revoked outcome=failed_not_found credential_id=%s", safe_id
+                )
+                raise CredentialAuthorityError("credential identifier not found")
+            safe_subject = _sanitize_for_log(entry.get("subject", "unknown"), _MAX_SUBJECT)
+            entry["status"] = "revoked"
+            document["manifestVersion"] += 1
+            try:
+                _durable_replace(path, document)
+            except CredentialAuthorityAmbiguousError:
+                _credential_logger.error(
+                    "action=credential_revoked outcome=ambiguous_persistence credential_id=%s subject=%s",
+                    safe_id, safe_subject,
+                )
+                raise
+            except Exception as exc:
+                _credential_logger.error(
+                    "action=credential_revoked outcome=failed_persistence credential_id=%s subject=%s",
+                    safe_id, safe_subject,
+                )
+                raise CredentialAuthorityError("credential revocation persistence failed") from exc
+    except (CredentialAuthorityError, CredentialAuthorityAmbiguousError):
+        raise
+    except Exception:
+        _credential_logger.error(
+            "action=credential_revoked outcome=failed_unexpected credential_id=%s", safe_id
+        )
+        raise
+
+    _credential_logger.info(
+        "action=credential_revoked outcome=success credential_id=%s subject=%s",
+        safe_id, safe_subject,
+    )
