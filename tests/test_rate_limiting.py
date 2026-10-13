@@ -42,3 +42,19 @@ def test_unauthenticated_audit_abuse_is_bounded(client):
     assert client.get("/audit/events", headers={"X-API-Key": "wrong"}).status_code == 401
     assert client.get("/audit/events", headers={"X-API-Key": "wrong"}).status_code == 401
     assert client.get("/audit/events", headers={"X-API-Key": "wrong"}).status_code == 429
+
+
+def test_rate_limit_response_includes_bounded_retry_after(client):
+    assert client.get("/audit/events").status_code == 200
+    assert client.get("/audit/events").status_code == 200
+    response = client.get("/audit/events")
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "60"
+
+
+def test_production_rate_limiting_fails_closed_without_shared_backend(monkeypatch, client):
+    monkeypatch.setenv("AUDIT_ENV", "production")
+    monkeypatch.setenv("AUDIT_RATE_LIMIT_BACKEND", "memory")
+    response = client.get("/audit/events")
+    assert response.status_code == 503
+    assert "redis" not in response.text.lower()

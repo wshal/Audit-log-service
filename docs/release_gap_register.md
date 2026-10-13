@@ -7,7 +7,7 @@ controls are implemented.
 | Area | Evidence currently available | Status and gate | Smallest next action |
 |---|---|---|---|
 | Submission attestation requirements (ATT-01--ATT-05) | `ATTESTATION.md` binds the PR source and merged revision, includes the declaration, claim matrix, limitations, and a reproducible archive digest. | **Evidence complete; final submission review remains.** | Review the typed sign-off, submission scope, and selected artifact before submission. |
-| Shared/global rate limiting and request limits (SEC-06) | `app/rate_limit.py`, request-size middleware, and endpoint tests prove process-local limiting and a 256 KiB body boundary. | **Supported prototype contract: one process/one replica.** Aggregate enforcement is not provided for multi-instance deployment. | Verify the documented process/replica contract at deployment; choose and operate a shared limiter only if multi-instance operation becomes required. |
+| Shared/global rate limiting and request limits (SEC-06) | `app/rate_limit.py`, request-size middleware, endpoint tests, and required Redis integration tests provide atomic shared enforcement when configured. | **Implemented with an explicit Redis deployment contract.** Production fails closed if Redis is missing or unavailable; managed provisioning, failover, and operational evidence remain deployment responsibilities. | Provision and monitor Redis, restrict access, validate namespace isolation, and retain CI evidence for the required integration job. |
 | Credential expiry, revocation, and rotation (SEC-02) | `app/credential_store.py`, `app/security.py`, and credential lifecycle tests cover manifest states and fail-closed authority errors. | **Implemented; deployment evidence incomplete.** Filesystem ownership, rotation custody, and multi-instance operational behavior are not proven here. | Document/prove production authority permissions and run independent-instance rotation/revocation tests. |
 | Signing-key custody, rollover, backup, compromise response (SEC-07) | Signing and verification code plus startup configuration checks are tested. | **Deployment-dependent.** The repository does not provide KMS/HSM custody, rollover automation, or compromise response. | Define key custody, rotation, backup, revocation, and incident procedures; add operational evidence. |
 | TLS and deployment boundary (SEC-09) | Application documents trusted-proxy assumptions; no production proxy or TLS deployment is in this repository. | **Deployment-dependent mandatory evidence.** | Verify TLS termination, forwarded-header policy, network ACLs, and production configuration in the target environment. |
@@ -27,5 +27,5 @@ controls are implemented.
   detected without a trusted retained checkpoint.
 - The project-specific Python JSON representation is retained for historical
   compatibility and is not RFC 8785/JCS.
-- Distributed-rate-limit implementation is deferred pending an explicit deployment decision.
+- Distributed-rate-limit code is implemented; managed Redis provisioning, high availability, capacity planning, and production operational evidence remain deferred deployment work.
 

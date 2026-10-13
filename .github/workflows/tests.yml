@@ -71,3 +71,29 @@ jobs:
         with:
           name: postgres-test-results
           path: postgres-test-results.xml
+
+  rate-limit-integration:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Run required distributed rate-limit tests
+        env:
+          AUDIT_RATE_LIMIT_BACKEND: redis
+          AUDIT_RATE_LIMIT_REDIS_URL: redis://localhost:6379/15
+          AUDIT_RATE_LIMIT_REQUIRED: "1"
+        run: python -m pytest tests/test_rate_limiting_distributed.py -q -rs

@@ -14,7 +14,7 @@
 | Cross-tenant or cross-resource BOLA | Authenticated principal grants, resource ownership resolution, repository predicates, non-disclosure of unauthorized counts/selectors | `app/authorization.py`, repository/services, `tests/test_tenant_authorization.py`; deployment identity provisioning is outside the repo |
 | Forged actor or proxy attribution | Actor binding to authenticated subject; explicit proxy role and non-empty delegation reason | Authorization and repository direct-call tests; administrator role alone is not delegation |
 | Replay and duplicate submission | Scoped idempotency key/fingerprint records, unique constraints, concurrent conflict handling, unknown-commit response | `app/storage/repository.py`, idempotency tests, PostgreSQL integration; external client retry behavior remains an operational concern |
-| Request flooding and oversized input | Process-local authenticated limiter and 256 KiB request-body guard | `app/rate_limit.py`, `app/main.py`, endpoint tests; supported deployment is one process/replica; no distributed/global limiter exists |
+| Request flooding and oversized input | Shared Redis-backed authenticated/anonymous limiter and 256 KiB request-body guard | `app/rate_limit.py`, `app/main.py`, endpoint and Redis integration tests; production Redis is required and outage fails closed |
 | Hash, signature, deletion, reordering, or transition tampering | Ed25519 signatures, hash chaining, ledger-state verification, startup preflight/quarantine, V1/V2 transition checks | Integrity, migration, recovery, and PostgreSQL tests; valid signed-prefix tail truncation needs an independently retained checkpoint |
 | Checkpoint substitution or stale local history | Versioned checkpoint schema, trusted-key signature verification, local full-ledger verification before comparison | `app/checkpoint.py`, `app/services/checkpoint_verifier.py`; no external immutable publication or custody service |
 | Sensitive logging or PII leakage | Sanitized authentication messages, scoped exports/compliance projection, separate PII capability, request/error response minimization | Security, export, and compliance tests; production log sink/redaction configuration remains deployment-dependent |
@@ -28,11 +28,11 @@
 2. The signing private key and checkpoint trust material are stored outside the database with restrictive ownership and rotation procedures.
 3. TLS terminates at a trusted proxy or application boundary; proxy headers cannot be forged by clients.
 4. The database account has only the required schema/data privileges and backups are protected from the application writer.
-5. The supported prototype deployment uses one process and one replica. A multi-instance deployment requires shared rate limiting, centralized security logging, and an independently retained checkpoint if truncation detection is required.
+5. Production instances use one shared Redis limiter namespace. Redis provisioning, access controls, capacity, failover, centralized security logging, and an independently retained checkpoint remain deployment responsibilities.
 
 ## Residual risks
 
 - A compromised service with valid signing authority can create internally valid new history; external key custody and checkpoints are required for stronger provenance.
 - A valid signed prefix can be truncated without detection when no independent checkpoint covers the removed suffix.
-- Process-local rate limiting does not constrain aggregate abuse across workers or hosts.
+- Redis-backed quotas constrain aggregate abuse across configured workers/hosts; Redis availability, namespace isolation, capacity, and failover remain operational assumptions.
 - Idempotency does not replace authentication, authorization, or a client-side durable retry policy.

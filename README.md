@@ -143,16 +143,16 @@ KMS/HSM custody, or runtime signing-configuration reload.
 Supported RBAC roles: `reader`, `writer`, `retention_admin`, `privacy_officer`, `exporter`, `compliance_reviewer`, and `admin`. Administrator privileges do not bypass tenant isolation or actor-attribution rules, and do not replace the explicit legacy-access or legacy-PII capabilities required for V1 operations.
 
 API abuse controls are configurable with `AUDIT_RATE_LIMIT_CAPACITY`,
-`AUDIT_RATE_LIMIT_WINDOW_SECONDS`, and `AUDIT_RATE_LIMIT_MAX_KEYS`. The current
-implementation bounds unauthenticated `/audit` traffic by client address and
-authenticated traffic by credential identity and operation. It is process-local;
-the supported prototype deployment is one application process and one replica;
-do not use multiple Uvicorn/Gunicorn workers or replicas while relying on this
-limiter. Operators must verify the effective process and replica count because
-the application cannot reliably detect that configuration itself. A deployment
-requiring a global quota must provide a shared limiter before claiming aggregate
-enforcement. The limiter returns generic HTTP 429 responses and does not log
-keys or digests. The application rejects request bodies larger than 256 KiB
+`AUDIT_RATE_LIMIT_WINDOW_SECONDS`, `AUDIT_RATE_LIMIT_BACKEND`, and the Redis
+connection settings documented in [docs/api_abuse_controls.md](docs/api_abuse_controls.md).
+The production backend is an atomic Redis fixed-window limiter shared by
+workers and replicas; local memory mode is retained only for explicit
+development/test use. Missing or unavailable production Redis fails closed with
+HTTP 503 rather than silently degrading to process-local enforcement. The
+limiter bounds unauthenticated `/audit` traffic by client address and
+authenticated traffic by credential identity and operation, returns generic
+HTTP 429 responses with `Retry-After`, and does not log keys or digests. The
+application rejects request bodies larger than 256 KiB
 with HTTP 413 before route parsing; deployments should enforce a compatible
 proxy limit as defense in depth. `POST /audit/events` supports a durable `Idempotency-Key`
 header (16–128 safe ASCII characters); keyed requests require an explicit
