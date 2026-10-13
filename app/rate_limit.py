@@ -68,16 +68,43 @@ class ProcessRateLimiter:
 class RedisRateLimiter:
     """Atomic fixed-window limiter backed by a Redis-compatible server."""
 
+    _REGISTRY_CLEANUP_LIMIT = 128
+
     _INCREMENT_SCRIPT = """
     local member = KEYS[1]
     local registry = KEYS[2]
+    local legacy_registry = KEYS[3]
     local max_keys = tonumber(ARGV[2])
+    local cleanup_limit = tonumber(ARGV[3])
+    local now = tonumber(redis.call('TIME')[1])
+    local legacy_type = redis.call('TYPE', legacy_registry).ok
+    if legacy_type ~= 'none' and legacy_type ~= 'set' then
+        error('unexpected legacy rate-limit registry type')
+    end
+    if legacy_type == 'set' then
+        local legacy_members = redis.call('SMEMBERS', legacy_registry)
+        for _, legacy_member in ipairs(legacy_members) do
+            if redis.call('EXISTS', legacy_member) == 1 then
+                local ttl = redis.call('TTL', legacy_member)
+                local expiry = now + tonumber(ARGV[1])
+                if ttl > 0 then
+                    expiry = now + ttl
+                end
+                redis.call('ZADD', registry, expiry, legacy_member)
+            end
+        end
+        redis.call('DEL', legacy_registry)
+    end
+    local stale = redis.call('ZRANGEBYSCORE', registry, '-inf', now, 'LIMIT', 0, cleanup_limit)
+    for _, stale_member in ipairs(stale) do
+        redis.call('ZREM', registry, stale_member)
+        redis.call('DEL', stale_member)
+    end
     if redis.call('EXISTS', member) == 0 then
-        if redis.call('SCARD', registry) >= max_keys and redis.call('SISMEMBER', registry, member) == 0 then
+        if redis.call('ZCARD', registry) >= max_keys then
             return -1
         end
-        redis.call('SADD', registry, member)
-        redis.call('EXPIRE', registry, ARGV[1])
+        redis.call('ZADD', registry, now + tonumber(ARGV[1]), member)
     end
     local current = redis.call('INCR', member)
     if current == 1 then
@@ -115,6 +142,12 @@ class RedisRateLimiter:
         return f"{self._prefix}:{self._safe_component(identity)}"
 
     def _registry(self) -> str:
+        # Version the registry key because earlier releases used a Redis Set.
+        # Reusing that key would make the sorted-set script fail with WRONGTYPE
+        # during a rolling deployment.
+        return f"{self._prefix}:registry:v2"
+
+    def _legacy_registry(self) -> str:
         return f"{self._prefix}:registry"
 
     def allow(self, identity: str, *, capacity: int, window: float) -> bool:
@@ -122,11 +155,13 @@ class RedisRateLimiter:
             window_seconds = max(1, int(window))
             count = self._client.eval(
                 self._INCREMENT_SCRIPT,
-                2,
+                3,
                 self._key(identity),
                 self._registry(),
+                self._legacy_registry(),
                 window_seconds,
                 self._max_keys,
+                self._REGISTRY_CLEANUP_LIMIT,
             )
             count = int(count)
             return count != -1 and count <= capacity
