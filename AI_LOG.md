@@ -1088,3 +1088,22 @@ The warning is the existing Starlette/httpx deprecation warning. These results
 apply to the current uncommitted working tree, not to a committed revision or
 CI run. Coverage was not rerun. The historical PR #7 CI evidence remains bound
 to its documented source and merge revisions.
+
+## Entry 72 - Final merged CI evidence
+
+**Date:** 2026-10-13
+
+Recorded the completed CI validation for merged `main` revision
+`ccc2db2e2c397f8637df0bc61fcb270b3a511a46` in workflow run
+`38347892406`. The exact job outputs were:
+
+- General coverage suite: **253 passed, 18 skipped, 1 warning**, **87.18%
+  combined coverage**, with the configured 85% threshold passed.
+- PostgreSQL integration: **22 passed, 0 skipped, 1 warning**.
+- Redis distributed rate-limit integration: **8 passed, 0 skipped, 1 warning**.
+
+The warning was the existing Starlette/httpx deprecation warning. The
+PostgreSQL and Redis jobs used required-mode guards, so their zero skipped
+counts represent actual execution rather than silent skips. These are CI
+results for merged `ccc2db2`, distinct from earlier local and historical
+working-tree results.

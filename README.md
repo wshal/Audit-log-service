@@ -203,6 +203,15 @@ isolated `audit_test` database: **22 passed, zero skipped, 1 warning**. The
 password was supplied through `PGPASSFILE` outside the repository. These results
 apply to the current uncommitted working tree; no current CI result is claimed.
 
+The merged `main` revision `ccc2db2e2c397f8637df0bc61fcb270b3a511a46` was
+validated by [workflow run 38347892406](https://github.com/wshal/Audit-log-service/actions/runs/38347892406).
+Its recorded outputs were **253 passed, 18 skipped, 1 warning** and **87.18%
+combined coverage** for the general suite, **22 passed, 0 skipped, 1 warning**
+for PostgreSQL, and **8 passed, 0 skipped, 1 warning** for Redis distributed
+rate limiting. The 18 general-suite skips are not counted as passes. The
+separate required PostgreSQL and Redis jobs used
+required-mode guards that fail if their integration tests skip.
+
 The current Phase B checkpoint contract is implemented in `app/checkpoint.py`
 and `app/services/checkpoint_verifier.py`, with focused coverage in
 `tests/test_checkpoints.py`. It validates a version-1 signed checkpoint and
