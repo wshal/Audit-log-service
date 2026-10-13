@@ -9,8 +9,11 @@
 - **Source branch for PR #7**: `security/checkpoint-release-prep`
 - **PR #7 source revision**: `76e93211137e02d222d320757dab8a5e1f635bbc`
 - **Merged `main` revision**: `d21195c7550bc747e6130b1630d7e721ffe80540`
-- **Committed code scope**: authorization, integrity and recovery hardening; PostgreSQL migration, allocator, concurrency, rollback, checkpoint, credential, idempotency, rate-limit, and request-boundary work present in merged `main`.
-- **Current evidence scope**: the endpoint inventory, threat model, release-gap register, Prompt 24 rate-limit contract documentation, and prior attestation are committed in `3e5d242`; this digest metadata is the intended second, metadata-only commit and is not part of the `3e5d242` archive.
+- **Historical PR #7 merged code scope**: authorization, integrity and recovery hardening and the PostgreSQL, checkpoint, idempotency, rate-limit, and request-boundary work present in merged `main` revision `d21195c`.
+- **Substantive release branch**: `review/release-docs-final`
+- **Substantive release revision**: `feef52876d310f9001ebfddfbc90b1f24db7fbbd`
+- **Substantive release scope**: the credential-manifest, signing-key, query-resource, test-cleanup, and documentation changes included in the substantive release commit.
+- **Current CI evidence**: PR #8 workflow run `38342250230` passed for `feef528`; detailed CI test counts were not independently available from the accessible logs.
 
 ## Dates and sign-off
 
@@ -21,21 +24,31 @@
 
 ## Artifact identity
 
-The code revision being attested is merged `main` revision
-`d21195c7550bc747e6130b1630d7e721ffe80540`. The documentation baseline is
-commit `3e5d2428fc448d7a5296fb6b299a6202c99b3aee`. A deterministic Git archive
-of that first documentation commit was generated with
-`git archive --format=tar 3e5d2428fc448d7a5296fb6b299a6202c99b3aee` and hashed
-with SHA-256. Repeating the command produced the same digest:
+The historical documentation baseline is commit
+`3e5d2428fc448d7a5296fb6b299a6202c99b3aee`. Its deterministic Git archive was
+generated with `git archive --format=tar
+3e5d2428fc448d7a5296fb6b299a6202c99b3aee` and hashed with SHA-256:
 
-- **Artifact**: Git archive TAR of `3e5d2428fc448d7a5296fb6b299a6202c99b3aee`
-- **SHA-256**: `a764ab11935917b6f55a7d28360735f4a6ef69580f78309bea65d1d0c3e95c14`
-- **Archive size**: 686,080 bytes
-- **Reproducibility check**: two independently generated archives matched byte-for-byte.
+- **Historical artifact**: Git archive TAR of `3e5d2428fc448d7a5296fb6b299a6202c99b3aee`
+- **Historical SHA-256**: `a764ab11935917b6f55a7d28360735f4a6ef69580f78309bea65d1d0c3e95c14`
+- **Historical archive size**: 686,080 bytes
+- **Historical reproducibility check**: two independently generated archives matched byte-for-byte.
 
-This digest identifies the first documentation commit's archive only. The
-second commit contains this digest metadata and is deliberately not represented
-as covered by the digest, avoiding a circular archive update.
+That historical digest covers the first documentation commit only. It does not
+cover the substantive release revision or any later metadata-only commit.
+
+The substantive release revision described by this attestation is
+`feef52876d310f9001ebfddfbc90b1f24db7fbbd`. A Git TAR archive generated
+directly from that revision is:
+
+- **Artifact**: `audit-log-service-v2.0-feef528-20261013.tar`
+- **SHA-256**: `c026a21581a2a58040f09080e3c1db6207649cc69039c38bf1a79a08751f3aaf`
+- **Archive size**: 727,040 bytes
+
+The archive covers exactly the substantive release commit above. If this
+attestation is updated in a later metadata-only commit, that later commit is
+not included in this archive and the digest does not cover it. A new archive
+and digest would be required for any later substantive revision.
 
 ## Candidate declaration
 
@@ -55,7 +68,7 @@ third-party verification.
 | Tenant/resource authorization and actor attribution | `app/authorization.py`, `app/security.py`, `app/routers/`, `app/storage/repository.py` | `tests/test_tenant_authorization.py`, `tests/test_security_controls.py` | Implemented and tested in the recorded suites |
 | Hash/signature integrity, V1/V2 compatibility, migration safety | `app/crypto/`, `app/services/verifier.py`, `app/storage/database.py`, `alembic/` | Integrity, migration, and PostgreSQL tests; PR #7 checks successful | Implemented; exact CI test counts not independently available here |
 | PostgreSQL concurrency and rollback | `app/storage/repository.py`, `tests/postgres/test_concurrency.py` | PR #7 `postgres-integration` job succeeded; local required-mode runs recorded in `AI_LOG.md` | Evidence available; detailed PR #7 counts unavailable from accessible logs |
-| Credential, request, rate-limit, idempotency, and quarantine controls | `app/credential_store.py`, `app/main.py`, `app/rate_limit.py`, `app/storage/repository.py`, `app/runtime_state.py` | Named tests in `docs/requirements_test_matrix.md` and CI workflow | Implemented in prototype scope; deployment assumptions remain |
+| Credential, request, rate-limit, idempotency, and quarantine controls | `app/credential_store.py`, `app/main.py`, `app/rate_limit.py`, `app/storage/repository.py`, `app/runtime_state.py` | Named tests in `docs/requirements_test_matrix.md` and current working-tree validation | Implemented in prototype scope; the credential/query/signing additions remain uncommitted and deployment assumptions remain |
 | Local signed checkpoint comparison | `app/checkpoint.py`, `app/services/checkpoint_verifier.py` | `tests/test_checkpoints.py` | Local verification only; no external immutable trust anchor |
 | Endpoint inventory and threat model | `docs/endpoint_security_inventory.md`, `docs/threat_model.md`, `tests/test_endpoint_inventory.py` | Route inventory and boundary tests | Documentation and executable inventory present |
 
@@ -65,5 +78,5 @@ third-party verification.
 - The in-process rate limiter is not a distributed/global limiter.
 - Checkpoints are locally verified signed objects; external publication, immutable storage, key custody, and independent detection of every valid-prefix tail truncation are not implemented.
 - The project-specific Python JSON serialization format is not RFC 8785/JCS.
-- PostgreSQL CI success is recorded for PR #7 source revision `76e9321`; detailed executed/passed/skipped counts were not independently retrievable during this update.
+- PostgreSQL CI success is recorded for PR #7 source revision `76e9321`; current working-tree PostgreSQL execution is separately recorded in `AI_LOG.md` Entry 71 and is not CI or merged-revision evidence.
 - The attestation is not itself a cryptographic signature, archive digest, or proof of independent third-party review.

@@ -5,7 +5,9 @@ import hashlib
 import json
 import multiprocessing
 import os
+import traceback
 from datetime import datetime, timezone, timedelta
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.crypto.signer import _private_key, public_key_b64, public_key_ring, verify_record_signature
@@ -17,7 +19,17 @@ from app.security import _credentials
 from app.security import authenticated_principal
 from app.storage.database import AuditRecordEntity, LedgerStateEntity
 from app.credential_store import acknowledge_delivery, activate, provision, revoke, rotate
-from app.credential_store import CredentialAuthorityError, _operator_lock
+from app.credential_store import (
+    CredentialAuthorityAmbiguousError,
+    CredentialAuthorityError,
+    _MAX_ACTIONS,
+    _MAX_CREDENTIALS,
+    _MAX_RESOURCE_SCOPES,
+    _MAX_RESOURCE_VALUES,
+    _MAX_ROLES,
+    _MAX_TENANT_GRANTS,
+    _operator_lock,
+)
 from app.credential_store import load_manifest
 
 
@@ -25,6 +37,17 @@ def _manifest_auth_worker(path, token, result_queue):
     os.environ["AUDIT_CREDENTIAL_MANIFEST"] = path
     from app.credential_store import authenticate
     result_queue.put(authenticate(token) is not None)
+
+
+def _development_key_worker(path, result_queue):
+    os.environ.pop("AUDIT_SIGNING_PRIVATE_KEY", None)
+    os.environ["AUDIT_DEVELOPMENT_KEY_PATH"] = path
+    try:
+        from app.crypto.signer import _private_key, public_key_b64
+        _private_key.cache_clear()
+        result_queue.put(("ok", public_key_b64()))
+    except BaseException as exc:
+        result_queue.put(("error", type(exc).__name__, str(exc), traceback.format_exc()))
 
 
 def _provision_worker(path, worker_id, result_queue):
@@ -122,9 +145,127 @@ def test_manifest_missing_or_malformed_production_authority_returns_503(monkeypa
     monkeypatch.setenv("AUDIT_CREDENTIAL_MANIFEST", str(path))
     with TestClient(app) as authenticated:
         assert authenticated.get("/audit/events", headers={"X-API-Key": "anything"}).status_code == 503
+
+
+def test_manifest_valid_tenant_grants_are_loaded_before_authorization(monkeypatch, tmp_path):
+    path = tmp_path / "credentials.json"
+    token = "grant-secret"
+    path.write_text(json.dumps({
+        "schemaVersion": 1, "manifestVersion": 1,
+        "credentials": {"grant-user": {
+            "subject": "grant-user", "digest": hashlib.sha256(token.encode()).hexdigest(),
+            "status": "active", "issuedAt": "2026-01-01T00:00:00Z",
+            "expiresAt": "2099-01-01T00:00:00Z", "roles": ["reader"],
+            "tenantGrants": [{"tenantId": "tenant-a", "actions": ["read"],
+                              "resourceScopes": [{"resourceType": "CLIENT_ACCOUNT", "resourceIds": ["client-a"]}]}],
+        }},
+    }), encoding="utf-8")
+    monkeypatch.setenv("AUDIT_CREDENTIAL_MANIFEST", str(path))
+    principal = authenticated_principal(token)
+    assert principal.tenant_grants[0]["tenantId"] == "tenant-a"
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda document: document["credentials"]["cred-1"].update({"tenantGrants": "not-a-list"}),
+    lambda document: document["credentials"]["cred-1"].update({"tenantGrants": [{"actions": ["read"]}]}),
+    lambda document: document["credentials"]["cred-1"].update({"tenantGrants": [{"tenantId": "t", "actions": "read"}]}),
+    lambda document: document["credentials"]["cred-1"].update({"tenantGrants": [{"tenantId": "t", "actions": ["invalid"]}]}),
+    lambda document: document["credentials"]["cred-1"].update({"tenantGrants": [{"tenantId": "t", "actions": ["read"], "resourceScopes": "bad"}]}),
+    lambda document: document["credentials"]["cred-1"].update({"roles": ["reader", 7]}),
+    lambda document: document["credentials"]["cred-1"].update({"subject": "s" * 129}),
+    lambda document: document["credentials"]["cred-1"].update({"tenantGrants": [{"tenantId": "t" * 129, "actions": ["read"]}]}),
+    lambda document: document["credentials"]["cred-1"].update({"tenantGrants": [{"tenantId": "t", "actions": ["a" * 129]}]}),
+    lambda document: document["credentials"]["cred-1"].update({"tenantGrants": [{"tenantId": "t", "actions": ["read"], "resourceIds": ["r" * 257]}]}),
+    lambda document: document["credentials"].update({"x" * 129: document["credentials"].pop("cred-1")}),
+])
+def test_manifest_malformed_nested_authorization_metadata_returns_503(monkeypatch, tmp_path, mutation):
+    path = tmp_path / "credentials.json"
+    token = _manifest(path)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    mutation(document)
+    path.write_text(json.dumps(document), encoding="utf-8")
+    monkeypatch.setenv("AUDIT_CREDENTIAL_MANIFEST", str(path))
+    with TestClient(app) as authenticated:
+        response = authenticated.get("/audit/events", headers={"X-API-Key": token})
+    assert response.status_code == 503
     path.write_text("not-json", encoding="utf-8")
     with TestClient(app) as authenticated:
         assert authenticated.get("/audit/events", headers={"X-API-Key": "anything"}).status_code == 503
+
+
+def _bounded_grant(index=0):
+    return {
+        "tenantId": f"tenant-{index}",
+        "actions": ["read"],
+        "resourceScopes": [{"resourceType": "CLIENT_ACCOUNT", "resourceIds": [f"client-{index}"]}],
+    }
+
+
+@pytest.mark.parametrize("collection", [
+    "credentials", "roles", "tenantGrants", "actions", "resourceScopes", "resourceIds",
+])
+def test_manifest_collection_limits_accept_boundary(monkeypatch, tmp_path, collection):
+    path = tmp_path / "credentials.json"
+    token = _manifest(path)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    entry = document["credentials"]["cred-1"]
+    if collection == "credentials":
+        original = entry.copy()
+        document["credentials"] = {f"cred-{index}": {**original, "digest": hashlib.sha256(f"token-{index}".encode()).hexdigest()} for index in range(_MAX_CREDENTIALS)}
+        document["credentials"]["cred-1"]["digest"] = original["digest"]
+    elif collection == "roles":
+        entry["roles"] = [f"role-{index}" for index in range(_MAX_ROLES)]
+    elif collection == "tenantGrants":
+        entry["tenantGrants"] = [_bounded_grant(index) for index in range(_MAX_TENANT_GRANTS)]
+    elif collection == "actions":
+        entry["tenantGrants"] = [{"tenantId": "tenant-a", "actions": ["read"] * _MAX_ACTIONS}]
+    elif collection == "resourceScopes":
+        entry["tenantGrants"] = [{"tenantId": "tenant-a", "actions": ["read"], "resourceScopes": [_bounded_grant(index)["resourceScopes"][0] for index in range(_MAX_RESOURCE_SCOPES)]}]
+    else:
+        entry["tenantGrants"] = [{"tenantId": "tenant-a", "actions": ["read"], "resourceIds": [f"resource-{index}" for index in range(_MAX_RESOURCE_VALUES)]}]
+    path.write_text(json.dumps(document), encoding="utf-8")
+    monkeypatch.setenv("AUDIT_CREDENTIAL_MANIFEST", str(path))
+    assert authenticated_principal(token).subject == "manifest-user"
+
+
+@pytest.mark.parametrize("collection", [
+    "credentials", "roles", "tenantGrants", "actions", "resourceScopes", "resourceIds",
+])
+def test_manifest_collection_limits_fail_closed(monkeypatch, tmp_path, collection):
+    path = tmp_path / "credentials.json"
+    token = _manifest(path)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    entry = document["credentials"]["cred-1"]
+    if collection == "credentials":
+        original = entry.copy()
+        document["credentials"] = {f"cred-{index}": {**original, "digest": hashlib.sha256(f"token-{index}".encode()).hexdigest()} for index in range(_MAX_CREDENTIALS + 1)}
+    elif collection == "roles":
+        entry["roles"] = [f"role-{index}" for index in range(_MAX_ROLES + 1)]
+    elif collection == "tenantGrants":
+        entry["tenantGrants"] = [_bounded_grant(index) for index in range(_MAX_TENANT_GRANTS + 1)]
+    elif collection == "actions":
+        entry["tenantGrants"] = [{"tenantId": "tenant-a", "actions": ["read"] * (_MAX_ACTIONS + 1)}]
+    elif collection == "resourceScopes":
+        entry["tenantGrants"] = [{"tenantId": "tenant-a", "actions": ["read"], "resourceScopes": [_bounded_grant(index)["resourceScopes"][0] for index in range(_MAX_RESOURCE_SCOPES + 1)]}]
+    else:
+        entry["tenantGrants"] = [{"tenantId": "tenant-a", "actions": ["read"], "resourceIds": [f"resource-{index}" for index in range(_MAX_RESOURCE_VALUES + 1)]}]
+    path.write_text(json.dumps(document), encoding="utf-8")
+    monkeypatch.setenv("AUDIT_CREDENTIAL_MANIFEST", str(path))
+    with pytest.raises(HTTPException) as caught:
+        authenticated_principal(token)
+    assert caught.value.status_code == 503
+
+
+def test_lifecycle_rejects_oversized_collections_and_preserves_manifest(monkeypatch, tmp_path):
+    path = tmp_path / "credentials.json"
+    monkeypatch.setenv("AUDIT_CREDENTIAL_MANIFEST", str(path))
+    provision("manifest-user", ["reader"], expires_at="2099-01-01T00:00:00Z", credential_id="first")
+    with pytest.raises(CredentialAuthorityError):
+        provision("new-user", [f"role-{index}" for index in range(_MAX_ROLES + 1)], expires_at="2099-01-01T00:00:00Z", credential_id="too-many-roles")
+    with pytest.raises(CredentialAuthorityError):
+        rotate("first", "manifest-user", ["reader"], tenant_grants=[_bounded_grant(index) for index in range(_MAX_TENANT_GRANTS + 1)], expires_at="2099-01-01T00:00:00Z", replacement_id="too-many-grants")
+    manifest = load_manifest()
+    assert set(manifest["credentials"]) == {"first"}
 
 
 def test_manifest_authentication_logs_do_not_contain_secret_or_digest(monkeypatch, tmp_path, caplog):
@@ -250,7 +391,9 @@ def test_activation_directory_durability_failure_is_ambiguous_after_ack(monkeypa
 
     def replace_then_fail(target, document):
         original(target, document)
-        raise OSError("directory fsync failure after replacement")
+        raise CredentialAuthorityAmbiguousError(
+            "credential authority mutation outcome is ambiguous; inspect the manifest before retrying"
+        )
 
     monkeypatch.setattr(store, "_durable_replace", replace_then_fail)
     with pytest.raises(CredentialAuthorityError, match="ambiguous"):
@@ -258,6 +401,95 @@ def test_activation_directory_durability_failure_is_ambiguous_after_ack(monkeypa
     # The replacement may already be authoritative; this is explicitly an
     # ambiguous outcome, not an unsafe claim that rollback succeeded.
     assert authenticate_for_test(replacement) is not None
+
+
+def test_post_replacement_provision_failure_is_ambiguous_and_not_retried(monkeypatch, tmp_path):
+    path = tmp_path / "credentials.json"
+    monkeypatch.setenv("AUDIT_CREDENTIAL_MANIFEST", str(path))
+    import app.credential_store as store
+    original = store._durable_replace
+    secret = "provision-secret"
+    monkeypatch.setattr(store, "generate_token", lambda: secret)
+
+    def replace_then_fail(target, document):
+        original(target, document)
+        raise CredentialAuthorityAmbiguousError(
+            "credential authority mutation outcome is ambiguous; inspect the manifest before retrying"
+        )
+
+    monkeypatch.setattr(store, "_durable_replace", replace_then_fail)
+    with pytest.raises(CredentialAuthorityAmbiguousError, match="inspect the manifest"):
+        provision("new-user", ["reader"], expires_at="2099-01-01T00:00:00Z", credential_id="new")
+    manifest = load_manifest()
+    assert manifest["credentials"]["new"]["status"] == "active"
+    assert manifest["manifestVersion"] == 2
+    assert secret not in str(manifest)
+
+
+@pytest.mark.parametrize("operation", ["rotate", "revoke"])
+def test_post_replacement_mutation_failure_is_ambiguous_and_manifest_inspected(monkeypatch, tmp_path, operation):
+    path = tmp_path / "credentials.json"
+    monkeypatch.setenv("AUDIT_CREDENTIAL_MANIFEST", str(path))
+    first = provision("manifest-user", ["reader"], expires_at="2099-01-01T00:00:00Z", credential_id="first")
+    import app.credential_store as store
+    original = store._durable_replace
+    replacement_secret = "replacement-secret"
+    if operation == "rotate":
+        monkeypatch.setattr(store, "generate_token", lambda: replacement_secret)
+
+    def replace_then_fail(target, document):
+        original(target, document)
+        raise CredentialAuthorityAmbiguousError(
+            "credential authority mutation outcome is ambiguous; inspect the manifest before retrying"
+        )
+
+    monkeypatch.setattr(store, "_durable_replace", replace_then_fail)
+    with pytest.raises(CredentialAuthorityAmbiguousError, match="inspect the manifest") as caught:
+        if operation == "rotate":
+            rotate("first", "manifest-user", ["reader"], expires_at="2099-01-01T00:00:00Z", replacement_id="second")
+        else:
+            revoke("first")
+    manifest = load_manifest()
+    if operation == "rotate":
+        assert manifest["credentials"]["second"]["status"] == "staged"
+        assert manifest["credentials"]["first"]["status"] == "active"
+    else:
+        assert manifest["credentials"]["first"]["status"] == "revoked"
+    assert first not in str(caught.value)
+    if operation == "rotate":
+        assert replacement_secret not in str(caught.value)
+
+
+@pytest.mark.parametrize("operation", ["provision", "rotate", "revoke"])
+def test_pre_replacement_mutation_failure_is_reported_without_manifest_change(monkeypatch, tmp_path, operation):
+    path = tmp_path / "credentials.json"
+    monkeypatch.setenv("AUDIT_CREDENTIAL_MANIFEST", str(path))
+    first = None
+    if operation != "provision":
+        first = provision("manifest-user", ["reader"], expires_at="2099-01-01T00:00:00Z", credential_id="first")
+    import app.credential_store as store
+
+    def fail_before_replace(target, document):
+        raise OSError("injected failure before replacement")
+
+    monkeypatch.setattr(store, "_durable_replace", fail_before_replace)
+    with pytest.raises(CredentialAuthorityError) as caught:
+        if operation == "provision":
+            provision("new-user", ["reader"], expires_at="2099-01-01T00:00:00Z", credential_id="new")
+        elif operation == "rotate":
+            rotate("first", "manifest-user", ["reader"], expires_at="2099-01-01T00:00:00Z", replacement_id="second")
+        else:
+            revoke("first")
+    assert not isinstance(caught.value, CredentialAuthorityAmbiguousError)
+    if operation == "provision":
+        assert not path.exists()
+    else:
+        manifest = load_manifest()
+        assert manifest["credentials"]["first"]["status"] == "active"
+        assert "second" not in manifest["credentials"]
+    assert "token" not in str(caught.value).lower()
+    if first:
+        assert first not in str(caught.value)
 
 
 def _event():
@@ -307,6 +539,42 @@ def test_development_signing_key_survives_cache_reset(tmp_path, monkeypatch):
     assert public_key_b64() == first_public_key
     _private_key.cache_clear()
     public_key_ring.cache_clear()
+
+
+def test_development_key_creation_serializes_first_start_attempts(tmp_path, monkeypatch):
+    path = tmp_path / "development.key"
+    monkeypatch.delenv("AUDIT_SIGNING_PRIVATE_KEY", raising=False)
+    monkeypatch.setenv("AUDIT_DEVELOPMENT_KEY_PATH", str(path))
+    context = multiprocessing.get_context("spawn")
+    result_queue = context.Queue()
+    processes = [context.Process(target=_development_key_worker, args=(str(path), result_queue)) for _ in range(2)]
+    try:
+        for process in processes:
+            process.start()
+        for process in processes:
+            process.join(timeout=10)
+        assert all(process.exitcode == 0 for process in processes)
+        results = [result_queue.get(timeout=2) for _ in processes]
+        assert all(result[0] == "ok" for result in results), results
+        assert results[0][1] == results[1][1]
+        assert len(path.read_text(encoding="ascii").strip()) == 44
+    finally:
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+            process.join(timeout=2)
+        result_queue.close()
+
+
+def test_partial_development_key_fails_closed_without_overwrite(tmp_path, monkeypatch):
+    path = tmp_path / "development.key"
+    path.write_text("partial-key", encoding="ascii")
+    monkeypatch.delenv("AUDIT_SIGNING_PRIVATE_KEY", raising=False)
+    monkeypatch.setenv("AUDIT_DEVELOPMENT_KEY_PATH", str(path))
+    _private_key.cache_clear()
+    with pytest.raises(RuntimeError, match="Development signing key file is invalid"):
+        _private_key()
+    assert path.read_text(encoding="ascii") == "partial-key"
 
 
 def test_role_is_enforced(monkeypatch):

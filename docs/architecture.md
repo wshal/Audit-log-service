@@ -113,9 +113,9 @@ the recognized audit baseline is rejected and requires an explicit operator
 adoption decision. Migration tests preserve populated mixed-epoch values and
 run the real verifier after migration. Local migration tests use SQLite;
 PostgreSQL execution is separately selectable from the SQLite default suite.
-The accepted working tree was also exercised locally against PostgreSQL 16 in
-required mode; this local evidence does not replace CI evidence tied to a final
-committed revision.
+An earlier accepted working tree was also exercised locally against PostgreSQL
+16 in required mode; this historical evidence does not replace CI evidence tied
+to the current uncommitted tree or a final committed revision.
 
 ### PostgreSQL integration validation (Gate 1)
 
@@ -139,8 +139,9 @@ docker compose -f docker-compose.postgres.yml down -v
 ```
 
 Clear the three environment variables after the command; the password file is
-not read or recorded by the repository. With this configuration, the accepted
-local PostgreSQL 16 execution completed **22 passed, zero skipped**. The
+not read or recorded by the repository. With this configuration, a previously
+recorded local PostgreSQL 16 execution completed **22 passed, zero skipped**.
+The
 default suite deliberately has no PostgreSQL URL and therefore skips its twelve
 database-backed cases.
 
@@ -281,7 +282,7 @@ treated as an explicit unsupported-platform limitation.
 - **Write API**: `POST /audit/events` validates payload, establishes next sequence number, hashes content and block, and commits atomically.
 - **Request boundary**: The application rejects HTTP request bodies larger than 256 KiB with `413 Request body too large` before route parsing. A deployment proxy should enforce a compatible limit as defense in depth; the application guard also counts streamed chunks when `Content-Length` is absent. If overflow is detected after response start, the existing status cannot be replaced with 413; downstream receives `http.disconnect` and its valid completion events are forwarded. A duplicate downstream `http.response.start` raises the documented ASGI protocol error and is not forwarded. Client-visible transport termination after an uncaught protocol error depends on the configured Uvicorn/server deployment and is not inferred from the unit-level ASGI tests.
 - **Rate-limit deployment contract**: The prototype supports one application process and one service replica because its fixed-window limiter is process-local. The application cannot reliably discover effective worker or replica counts, so operators must validate the server command, container replica setting, and runtime process list. Multi-worker or multi-replica deployments require a shared limiter before claiming aggregate quotas.
-- **Query API**: `GET /audit/events` supports indexed multi-attribute filtering by actor, resource, eventType, timestamp ranges, and pagination (`limit`, `offset`).
+- **Query API**: `GET /audit/events` supports indexed multi-attribute filtering by actor, resource, eventType, timestamp ranges, and pagination (`limit`, `offset`). Unbounded-time queries apply ordering, counting, and page slicing in SQL; timestamp-bounded queries retain instant-aware Python filtering because persisted timestamps may have mixed precision. `offset` is limited to 100,000 to bound deep-page resource consumption; this is not a substitute for SQL pagination.
 - **Chain Verification**: `GET /audit/verify` traverses ledger in sequence, detecting:
   - `CONTENT_HASH_MISMATCH`
   - `CHAIN_LINK_BROKEN`

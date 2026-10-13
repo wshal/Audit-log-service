@@ -13,6 +13,14 @@ and return HTTP 503. Unknown, malformed, expired, revoked, and superseded
 credentials return generic HTTP 401 responses. No stale environment or
 process-local manifest fallback is used when a manifest path is configured.
 
+The prototype bounds authority collections before authentication or authorization
+consumes them: a manifest may contain at most 256 credentials; each credential
+may have 16 roles and 64 tenant grants; each grant may contain 16 actions and 64
+resource scopes; and each resource list may contain 256 identifiers. These are
+resource-safety limits, not authorization wildcards or truncation rules.
+Oversized collections fail closed with HTTP 503, and lifecycle-created
+provisioning or staged-rotation entries are validated against the same limits.
+
 Provisioning, rotation, and revocation are operator procedures, not API
 routes. The helper operations in `app.credential_store` are intended to run
 under a separately authenticated OS identity. All read-modify-write operations

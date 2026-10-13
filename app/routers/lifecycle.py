@@ -87,8 +87,8 @@ def redact_audit_record(
     description="Exports all records for actorId or resourceId packaged with boundary metadata and integrity hashes for offline verification.",
 )
 def export_audit_records(
-    actorId: Optional[str] = Query(None, description="Actor identifier to export"),
-    resourceId: Optional[str] = Query(None, description="Resource identifier to export"),
+    actorId: Optional[str] = Query(None, max_length=128, description="Actor identifier to export"),
+    resourceId: Optional[str] = Query(None, max_length=256, description="Resource identifier to export"),
     db: Session = Depends(get_db),
     principal: Principal = Depends(require_roles("exporter")),
 ):

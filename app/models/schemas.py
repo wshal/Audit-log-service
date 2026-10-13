@@ -8,6 +8,8 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+MAX_QUERY_OFFSET = 100_000
+
 
 def normalize_iso8601(value: str) -> str:
     """Parse an ISO-8601 instant and return one canonical UTC representation."""
@@ -135,14 +137,14 @@ class QueryFilters(BaseModel):
     """
     Query filters for audit records (Scenario A Query API).
     """
-    actorId: Optional[str] = None
-    resourceType: Optional[str] = None
-    resourceId: Optional[str] = None
-    eventType: Optional[str] = None
-    fromTime: Optional[str] = None
-    toTime: Optional[str] = None
+    actorId: Optional[str] = Field(default=None, max_length=128)
+    resourceType: Optional[str] = Field(default=None, max_length=128)
+    resourceId: Optional[str] = Field(default=None, max_length=256)
+    eventType: Optional[str] = Field(default=None, max_length=128)
+    fromTime: Optional[str] = Field(default=None, max_length=64)
+    toTime: Optional[str] = Field(default=None, max_length=64)
     limit: int = Field(default=50, ge=1, le=1000)
-    offset: int = Field(default=0, ge=0)
+    offset: int = Field(default=0, ge=0, le=MAX_QUERY_OFFSET)
 
     @field_validator("fromTime", "toTime")
     @classmethod

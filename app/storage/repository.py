@@ -405,9 +405,26 @@ class AuditLedgerRepository:
             query = query.filter(AuditRecordEntity.resource_id == filters.resourceId)
         if filters.eventType:
             query = query.filter(AuditRecordEntity.event_type == filters.eventType)
-        candidates = query.order_by(AuditRecordEntity.sequence_num.asc()).all()
         lower = parse_timestamp(filters.fromTime) if filters.fromTime else None
         upper = parse_timestamp(filters.toTime) if filters.toTime else None
+
+        # Stored timestamps intentionally retain their historical string
+        # representation.  Comparing them in SQL would make mixed-precision
+        # values (for example, whole seconds and fractional seconds) unsafe.
+        # For the common unbounded-time path, however, all predicates and
+        # pagination can be executed by the database without materializing the
+        # full candidate set in Python.
+        if lower is None and upper is None:
+            total_count = query.count()
+            results = (
+                query.order_by(AuditRecordEntity.sequence_num.asc())
+                .offset(filters.offset)
+                .limit(filters.limit)
+                .all()
+            )
+            return results, total_count
+
+        candidates = query.order_by(AuditRecordEntity.sequence_num.asc()).all()
         results_all = []
         for record in candidates:
             instant = parse_timestamp(record.timestamp)

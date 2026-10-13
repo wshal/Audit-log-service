@@ -245,3 +245,25 @@ def test_valid_small_request_remains_usable_after_body_guard(client):
     }
     response = client.post("/audit/events", json=body)
     assert response.status_code == 201
+
+
+def test_query_boundaries_reject_oversized_identifiers_without_querying(client):
+    assert client.get("/audit/events", params={"actorId": "a" * 129}).status_code == 422
+    assert client.get("/audit/events", params={"resourceId": "r" * 257}).status_code == 422
+    assert client.get(
+        "/audit/compliance/client-access", params={"clientId": "c" * 257}
+    ).status_code == 422
+    assert client.get("/audit/export", params={"actorId": "a" * 129}).status_code == 422
+
+
+def test_query_offset_boundary_is_bounded(client):
+    assert client.get("/audit/events", params={"offset": 100001}).status_code == 422
+    assert client.get("/audit/events", params={"offset": 100000, "limit": 1}).status_code == 200
+
+
+def test_redaction_sequence_boundary_rejects_non_positive_values(client):
+    response = client.post(
+        "/audit/redact",
+        json={"sequenceNum": 0, "fieldPaths": ["secret"], "reason": "boundary test"},
+    )
+    assert response.status_code == 422

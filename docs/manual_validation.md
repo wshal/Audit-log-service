@@ -80,9 +80,15 @@ Stop the service with `Ctrl+C`, then run:
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-Latest current working-tree result: **212 passed, 12 skipped** (plus one
-dependency deprecation warning). All twelve skips are PostgreSQL-backed tests
-not selected without PostgreSQL connection configuration. The combined flow is
+The earlier PostgreSQL-unconfigured working-tree result was **249 passed, 12
+skipped**. With the guarded PostgreSQL environment configured, the latest
+current working-tree result is **261 passed, 0 skipped** (plus one dependency
+deprecation warning). The current PostgreSQL 16.15 suite completed **22 passed,
+zero skipped, 1 warning** against `audit_test`. A focused
+endpoint/integrity/security run completed with **99 passed, 1 warning**; the
+warning is the existing Starlette/httpx deprecation warning. Compilation and
+`git diff --check` passed. These results apply to the current uncommitted tree;
+the combined flow is
 `test_end_to_end_ideal_workflow` in `tests/test_security_controls.py`; tenant
 authorization coverage is in `tests/test_tenant_authorization.py`, and startup
 quarantine/direct-entry/recovery coverage is in `tests/test_preflight_quarantine.py`.
@@ -95,11 +101,13 @@ For reproducible coverage and compile validation, run:
 ```
 
 The earlier measured run is historical: 91.08% line coverage, 78.76% branch
-coverage, and 88.27% combined coverage. The current local coverage command on
-measured 88.02% combined coverage (the configured 85% gate passed).
-PostgreSQL is intentionally not exercised by these local commands; its
-database-backed tests remain separately selectable under `tests/postgres`.
-The separately selectable integration suite is under `tests/postgres`. The
+coverage, and 88.27% combined coverage. A prior local coverage command
+measured 88.02% combined coverage (the configured 85% gate passed). This
+coverage result is historical for an earlier working tree; coverage was not
+rerun for the latest validation.
+The default and coverage commands above do not configure PostgreSQL; the
+database-backed tests are separately selectable under `tests/postgres`. The
+integration suite is under `tests/postgres`. The
 PR #7 [workflow](https://github.com/wshal/Audit-log-service/actions/runs/38293842786)
 and [postgres-integration job](https://github.com/wshal/Audit-log-service/actions/runs/38293842786/job/114960061221)
 completed successfully for source revision `76e93211137e02d222d320757dab8a5e1f635bbc`,
@@ -124,9 +132,9 @@ try {
 }
 ```
 
-The accepted local PostgreSQL 16 run completed **22 passed, zero skipped**.
-This is a separate execution mode and must not be added to the default-suite
-count. It does not substitute for CI validation on a final committed revision.
+The PostgreSQL run uses a password file outside the repository and the guarded
+local `audit_test` database. It does not substitute for CI validation on a
+final committed revision.
 
 The Phase B checkpoint contract is exercised by `tests/test_checkpoints.py`.
 `app/checkpoint.py` validates the versioned signed object, and
