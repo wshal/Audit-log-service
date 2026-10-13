@@ -133,21 +133,28 @@ jobs:
           sys.exit(1 if skipped else 0)"
       - name: Assert POSIX file locking executed natively on Linux
         shell: bash
-        run: >-
-          python -c "import fcntl, tempfile;
-          from pathlib import Path;
-          from app.credential_store import _operator_lock;
-          called = [];
-          orig_flock = fcntl.flock;
+        run: |
+          python -c '
+          import fcntl, tempfile
+          from pathlib import Path
+          from app.credential_store import _operator_lock
+
+          called = []
+          orig_flock = fcntl.flock
+
           def tracking_flock(fd, op):
-              called.append(op);
-              return orig_flock(fd, op);
-          fcntl.flock = tracking_flock;
+              called.append(op)
+              return orig_flock(fd, op)
+
+          fcntl.flock = tracking_flock
+
           with tempfile.NamedTemporaryFile() as tf:
               with _operator_lock(Path(tf.name)):
-                  pass;
-          print(f'Native POSIX flock operations: {called}');
-          assert len(called) >= 2, 'Native POSIX flock was not executed';"
+                  pass
+
+          print(f"Native POSIX flock operations: {called}")
+          assert len(called) >= 2, "Native POSIX flock was not executed"
+          '
       - name: Compile application and tests
         run: python -m compileall -q app tests
       - name: Upload Linux security test report
