@@ -1,32 +1,39 @@
 # API abuse controls
 
-The service applies a bounded process-local fixed-window limiter to `/audit`
-requests. Before authentication, requests are counted by the transport client
-address. After authentication, requests are additionally counted by the
-authenticated credential identity and operation path. Caller-supplied identity
-headers and API-key material are never used as limiter keys or emitted in
-responses/logs.
+The service applies an atomic fixed-window limiter to `/audit` requests. In
+production, it requires the configured Redis-compatible backend so all workers
+and replicas share quota state. Before authentication, requests are counted by
+the transport client address. After authentication, requests are additionally
+counted by the authenticated credential identity and operation path.
+Caller-supplied identity headers and API-key material are never used as limiter
+keys or emitted in responses/logs.
 
 Configuration:
 
 - `AUDIT_RATE_LIMIT_CAPACITY` (default `1000` requests per window)
 - `AUDIT_RATE_LIMIT_WINDOW_SECONDS` (default `60`, bounded to one day)
 - `AUDIT_RATE_LIMIT_MAX_KEYS` (default `4096`, bounded to `100000`)
+- `AUDIT_RATE_LIMIT_BACKEND` (`memory` outside production; `redis` is required
+  in production)
+- `AUDIT_RATE_LIMIT_REDIS_URL` (required when the Redis backend is selected)
+- `AUDIT_RATE_LIMIT_REDIS_PREFIX` (default `audit:ratelimit:v1`)
+- `AUDIT_RATE_LIMIT_REDIS_TIMEOUT_SECONDS` (default `0.5`, bounded to `10`)
+- `AUDIT_RATE_LIMIT_REDIS_MAX_CONNECTIONS` (default `16`, bounded to `256`)
+- `AUDIT_RATE_LIMIT_REQUIRED=1` (integration-test guard that fails if Redis is
+  unavailable)
 
-Exceeding a limit returns HTTP 429 with a generic response. Entries are bounded
-with oldest-key eviction and expire when their window rolls over. This is a
-per-process control only. The supported deployment contract for this prototype
-is one application process and one service replica; do not start
-Uvicorn/Gunicorn with multiple workers or deploy multiple replicas while
-relying on this limiter. A deployment that needs aggregate enforcement must
-choose and operate a shared backend before claiming a global quota.
+Exceeding a limit returns HTTP 429 with a generic response and `Retry-After`.
+Redis counters are updated by one atomic Lua operation and expire at the end of
+the configured window. The `memory` backend remains an explicit local-
+development/test option. In production, a missing, invalid, or unavailable
+Redis backend returns a bounded generic HTTP 503; the service never silently
+falls back to process-local enforcement.
 
-The application cannot reliably discover the effective worker count or replica
-count from inside the ASGI process. Operators must validate the deployment
-configuration and runtime process/replica count as part of release checks
-(for example, inspect the server command, container replica setting, and
-process list). No startup guard is claimed to prevent an operator from
-misconfiguring a multi-process deployment.
+All instances intended to enforce one quota must use the same Redis URL and
+namespace. Operators must provision Redis, restrict its access, monitor
+capacity/latency, and validate the configured namespace during release checks.
+The application does not provision Redis or claim a managed Redis service,
+high-availability failover, or cross-region clock guarantees.
 
 `POST /audit/events` accepts an `Idempotency-Key` matching
 `[A-Za-z0-9._~-]{16,128}`. Keyed requests require an explicit timestamp. The

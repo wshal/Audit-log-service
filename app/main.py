@@ -337,8 +337,14 @@ async def quarantine_gate(request: Request, call_next):
         try:
             enforce_ip_limit(request)
         except Exception as exc:
-            if getattr(exc, "status_code", None) == 429:
-                return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded"})
+            if getattr(exc, "status_code", None) in {429, 503}:
+                status_code = exc.status_code
+                headers = getattr(exc, "headers", None)
+                return JSONResponse(
+                    status_code=status_code,
+                    content={"detail": "Rate limit exceeded" if status_code == 429 else "Rate-limit service unavailable"},
+                    headers=headers,
+                )
             raise
     return await call_next(request)
 

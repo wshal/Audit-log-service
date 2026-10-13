@@ -19,11 +19,11 @@ This inventory describes the registered `/audit` API on the current source tree.
 - `X-API-Key` authentication is fail-closed in production when the configured authority is missing or unavailable. Credentials, digests, and secrets are not intended for logs or responses.
 - The application request guard rejects bodies above 256 KiB; a deployment proxy should enforce a compatible limit as defense in depth.
 - TLS termination, trusted proxy configuration, firewalling, database credentials, filesystem ACLs, key custody, backup/restore, dependency scanning, and log retention remain deployment responsibilities.
-- The local rate limiter is process-local. A multi-instance deployment requires a shared authoritative limiter.
+- Production rate limiting uses the shared Redis-compatible backend; memory mode is limited to explicit local development/test use. Missing or unavailable production Redis fails closed with HTTP 503.
 - The checkpoint implementation is deliberately not an external trust anchor or checkpoint publication service.
 
 ## Evidence gaps
 
 - The endpoint inventory proves route registration and selected negative boundaries; it does not replace a production deployment review.
-- No external identity provider, global rate limiter, external checkpoint store, key-rotation custody workflow, or independently retained archive checkpoint is configured by this repository.
+- No external identity provider, managed Redis service/failover, external checkpoint store, key-rotation custody workflow, or independently retained archive checkpoint is configured by this repository.
 - PR #7 workflow and job success are revision-bound evidence, but detailed job test counts were not independently retrievable during this update.

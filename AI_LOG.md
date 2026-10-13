@@ -953,6 +953,39 @@ misleading startup guard was added. A shared limiter remains conditional on a
 future multi-instance deployment decision. Existing rate-limit implementation,
 request limits, authentication, and response semantics were unchanged.
 
+## Entry 72 - Distributed Redis rate limiting (P0)
+
+**Date:** 2026-10-13
+
+Created feature branch `security/p0-distributed-rate-limiting` from merged
+`main` at `48d18a0`. Replaced the process-local production gap with an explicit
+Redis-compatible atomic fixed-window limiter. Production requires
+`AUDIT_RATE_LIMIT_BACKEND=redis` and `AUDIT_RATE_LIMIT_REDIS_URL`; missing or
+unavailable Redis returns a bounded generic HTTP 503 and never falls back to
+process-local state. Memory mode remains available only outside production for
+local development and deterministic unit tests. Redis keys use hashed identity
+components, bounded active-key cardinality, expiry, bounded timeouts, and
+bounded connection pools.
+
+Added required Redis integration coverage for independent limiter instances,
+atomic concurrent quota enforcement, independent identities/expiry, and the
+production no-fallback guard. Added a dedicated CI job with a Redis 7 service;
+`AUDIT_RATE_LIMIT_REQUIRED=1` prevents silent integration skips there. The
+existing PostgreSQL job and safeguards remain unchanged.
+
+Validation on this uncommitted working tree:
+
+- `\.venv\Scripts\python -m pytest tests/test_rate_limiting.py tests/test_endpoint_inventory.py tests/test_security_controls.py -q`: **79 passed, 1 warning**.
+- `\.venv\Scripts\python -m pytest tests/test_rate_limiting_distributed.py -q -rs`: **2 passed, 5 skipped, 1 warning**; no Redis service was available locally, so the five real shared-backend tests did not execute.
+- `\.venv\Scripts\python -m pytest -q`: **253 passed, 17 skipped, 1 warning**; twelve PostgreSQL cases and five Redis cases were skipped because their local services were not configured for this invocation.
+- `POSTGRES_TEST_REQUIRED=1` guarded run of `\.venv\Scripts\python -m pytest tests/postgres -q -rs`: **22 passed, 0 skipped, 1 warning** against local PostgreSQL.
+- `\.venv\Scripts\python -m compileall -q app tests alembic` and `git diff --check` passed.
+
+Redis distributed enforcement remains unverified locally and requires the
+configured CI service or an equivalent disposable Redis-compatible instance.
+No application release attestation was changed; this branch is not committed,
+and no commit, push, or merge was performed for this remediation.
+
 ## Entry 68 - Development signing-key crash-safety and current validation
 
 **Date:** 2026-10-13
