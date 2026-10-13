@@ -145,6 +145,9 @@ def test_manifest_missing_or_malformed_production_authority_returns_503(monkeypa
     monkeypatch.setenv("AUDIT_CREDENTIAL_MANIFEST", str(path))
     with TestClient(app) as authenticated:
         assert authenticated.get("/audit/events", headers={"X-API-Key": "anything"}).status_code == 503
+    path.write_text("not-json", encoding="utf-8")
+    with TestClient(app) as authenticated:
+        assert authenticated.get("/audit/events", headers={"X-API-Key": "anything"}).status_code == 503
 
 
 def test_manifest_valid_tenant_grants_are_loaded_before_authorization(monkeypatch, tmp_path):
@@ -188,9 +191,44 @@ def test_manifest_malformed_nested_authorization_metadata_returns_503(monkeypatc
     with TestClient(app) as authenticated:
         response = authenticated.get("/audit/events", headers={"X-API-Key": token})
     assert response.status_code == 503
-    path.write_text("not-json", encoding="utf-8")
-    with TestClient(app) as authenticated:
-        assert authenticated.get("/audit/events", headers={"X-API-Key": "anything"}).status_code == 503
+
+
+def test_manifest_path_trust_rejects_relative_and_symlinked_paths(monkeypatch, tmp_path):
+    from app.credential_store import authenticate
+
+    (tmp_path / "real").mkdir()
+    token = _manifest(tmp_path / "real" / "credentials.json")
+    real_path = tmp_path / "real" / "credentials.json"
+
+    monkeypatch.setenv("AUDIT_CREDENTIAL_MANIFEST", "relative/credentials.json")
+    with pytest.raises(CredentialAuthorityError, match="absolute"):
+        authenticate(token)
+
+    link = tmp_path / "credentials-link.json"
+    try:
+        link.symlink_to(real_path)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlink creation unsupported: {exc}")
+    monkeypatch.setenv("AUDIT_CREDENTIAL_MANIFEST", str(link))
+    with pytest.raises(CredentialAuthorityError, match="not trusted"):
+        authenticate(token)
+
+
+def test_manifest_path_trust_rejects_symlinked_parent_for_mutations(monkeypatch, tmp_path):
+    real_parent = tmp_path / "real-parent"
+    real_parent.mkdir()
+    real_path = real_parent / "credentials.json"
+    _manifest(real_path)
+    linked_parent = tmp_path / "linked-parent"
+    try:
+        linked_parent.symlink_to(real_parent, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"directory symlink creation unsupported: {exc}")
+
+    monkeypatch.setenv("AUDIT_CREDENTIAL_MANIFEST", str(linked_parent / "credentials.json"))
+    with pytest.raises(CredentialAuthorityError, match="not trusted"):
+        provision("new-user", ["reader"], expires_at="2099-01-01T00:00:00Z", credential_id="new")
+    assert json.loads(real_path.read_text(encoding="utf-8"))["credentials"]
 
 
 def _bounded_grant(index=0):

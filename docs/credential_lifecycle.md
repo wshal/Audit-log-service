@@ -27,7 +27,12 @@ under a separately authenticated OS identity. All read-modify-write operations
 use a persistent sibling lock file with a bounded five-second acquisition:
 POSIX uses `fcntl.flock`; Windows uses one-byte `msvcrt.locking`. The lock file
 is never deleted. Process termination releases the OS lock, but network filesystems
-and lock-file replacement are outside the supported boundary.
+and lock-file replacement are outside the supported boundary. The configured
+manifest path must be absolute; existing manifest, parent, and lock entries are
+checked with non-following metadata calls and symlink/reparse-point paths are
+rejected. These checks reduce path substitution but do not eliminate a
+time-of-check/time-of-use race against an actor who can rename entries in the
+containing directory, so directory ownership and ACLs remain deployment controls.
 
 Manifest replacement uses complete write, flush, file fsync, atomic replacement,
 and containing-directory fsync where supported. The service identity must be

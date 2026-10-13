@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import secrets
+import stat
 import tempfile
 import time
 from contextlib import contextmanager
@@ -148,9 +149,75 @@ def _validate_tenant_grants(grants: Any) -> None:
                         _validate_resource_values(scope[key], f"tenantGrants.resourceScopes.{key}")
 
 
+def _is_reparse_or_symlink(path: Path, metadata: os.stat_result) -> bool:
+    """Return whether *path* is a link-like filesystem object.
+
+    ``lstat`` is used by the caller so a symlink is never followed during the
+    check.  Windows junctions and other reparse points are identified through
+    ``st_file_attributes`` when that platform exposes it.
+    """
+    if stat.S_ISLNK(metadata.st_mode):
+        return True
+    if os.name == "nt":
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        return bool(getattr(metadata, "st_file_attributes", 0) & reparse_flag)
+    return False
+
+
+def _validate_manifest_path(path: Path, *, allow_missing_manifest: bool) -> Path:
+    """Validate the configured authority path without following links.
+
+    This is a trust-boundary check, not a complete TOCTOU defense: an actor
+    able to rename entries in the parent directory can still race a later
+    open/replace operation.  Deployment ACLs must therefore protect the
+    containing directory.
+    """
+    path_string = os.fspath(path)
+    if not os.path.isabs(path_string):
+        raise CredentialAuthorityError("credential authority path must be absolute")
+    if any(component in {".", ".."} for component in re.split(r"[/\\\\]", path_string)):
+        raise CredentialAuthorityError("credential authority path is not trusted")
+    parent_string = os.path.dirname(path_string)
+    if not os.path.isdir(parent_string):
+        raise CredentialAuthorityError("credential authority path is unavailable")
+
+    drive, tail = os.path.splitdrive(path_string)
+    root = tail[:1] if tail[:1] in {"/", "\\"} else ""
+    current = f"{drive}{root}"
+    components = [part for part in re.split(r"[/\\\\]", tail[len(root):]) if part]
+    for component in components:
+        current = os.path.join(current, component)
+        if not os.path.lexists(current):
+            continue
+        try:
+            metadata = os.lstat(current)
+        except OSError as exc:
+            raise CredentialAuthorityError("credential authority path is unavailable") from exc
+        if _is_reparse_or_symlink(current, metadata):
+            raise CredentialAuthorityError("credential authority path is not trusted")
+        if os.path.normcase(current) == os.path.normcase(path_string):
+            if not stat.S_ISREG(metadata.st_mode):
+                raise CredentialAuthorityError("credential authority path is not a regular file")
+        elif not stat.S_ISDIR(metadata.st_mode):
+            raise CredentialAuthorityError("credential authority path is not a directory")
+
+    lock_path = _lock_path(path)
+    lock_string = os.fspath(lock_path)
+    if os.path.lexists(lock_string):
+        try:
+            lock_metadata = os.lstat(lock_string)
+        except OSError as exc:
+            raise CredentialAuthorityError("credential authority lock is unavailable") from exc
+        if _is_reparse_or_symlink(lock_path, lock_metadata) or not stat.S_ISREG(lock_metadata.st_mode):
+            raise CredentialAuthorityError("credential authority lock is not trusted")
+    return path
+
+
 def _manifest_path() -> Path | None:
     value = os.getenv("AUDIT_CREDENTIAL_MANIFEST", "").strip()
-    return Path(value) if value else None
+    if not value:
+        return None
+    return _validate_manifest_path(Path(value), allow_missing_manifest=True)
 
 
 def _parse_time(value: Any, field: str) -> datetime:
@@ -214,6 +281,7 @@ def load_manifest() -> dict:
     path = _manifest_path()
     if path is None:
         raise CredentialAuthorityError("credential authority is not configured")
+    path = _validate_manifest_path(path, allow_missing_manifest=False)
     try:
         with path.open("r", encoding="utf-8") as stream:
             return _validate_manifest(json.load(stream))
@@ -247,7 +315,7 @@ def _lock_path(path: Path) -> Path:
 @contextmanager
 def _operator_lock(path: Path, timeout: float = 5.0):
     """Acquire a bounded cross-process lock; never delete the lock file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path = _validate_manifest_path(path, allow_missing_manifest=True)
     handle = open(_lock_path(path), "a+b")
     deadline = time.monotonic() + timeout
     acquired = False
@@ -302,6 +370,7 @@ def _operator_lock(path: Path, timeout: float = 5.0):
 
 
 def _durable_replace(path: Path, document: dict) -> None:
+    path = _validate_manifest_path(path, allow_missing_manifest=True)
     _validate_manifest(document)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent), text=True)
