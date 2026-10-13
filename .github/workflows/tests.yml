@@ -111,3 +111,48 @@ jobs:
         with:
           name: rate-limit-test-results
           path: rate-limit-test-results.xml
+
+  linux-security-controls:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Run Linux security controls and POSIX locking tests
+        run: python -m pytest tests/test_security_controls.py -q -rs --junitxml=linux-security-test-results.xml
+      - name: Require Linux security tests to execute without skips
+        shell: bash
+        run: >-
+          python -c "import sys, xml.etree.ElementTree as ET;
+          root=ET.parse('linux-security-test-results.xml').getroot();
+          skipped=len(root.findall('.//testcase/skipped'));
+          print(f'Linux security skipped tests: {skipped}');
+          sys.exit(1 if skipped else 0)"
+      - name: Assert POSIX file locking executed natively on Linux
+        shell: bash
+        run: >-
+          python -c "import fcntl, tempfile;
+          from pathlib import Path;
+          from app.credential_store import _operator_lock;
+          called = [];
+          orig_flock = fcntl.flock;
+          def tracking_flock(fd, op):
+              called.append(op);
+              return orig_flock(fd, op);
+          fcntl.flock = tracking_flock;
+          with tempfile.NamedTemporaryFile() as tf:
+              with _operator_lock(Path(tf.name)):
+                  pass;
+          print(f'Native POSIX flock operations: {called}');
+          assert len(called) >= 2, 'Native POSIX flock was not executed';"
+      - name: Compile application and tests
+        run: python -m compileall -q app tests
+      - name: Upload Linux security test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-security-test-results
+          path: linux-security-test-results.xml

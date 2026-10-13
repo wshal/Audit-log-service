@@ -50,6 +50,28 @@ must contain only outcome categories, credential IDs known after validation,
 and request metadata; they must never contain API keys, digests, headers, or
 manifest contents.
 
+## Administrative Lifecycle Logging and Operational Monitoring
+
+The administrative lifecycle helpers in `app.credential_store` emit structured, sanitized security events to logger `audit.security.credentials` for operator traceability:
+
+- **Lifecycle Actions**: `credential_provisioned`, `credential_rotated`, `credential_delivery_acknowledged`, `credential_activated`, `credential_revoked`, and `operator_lock`.
+- **Outcome Categories**: `success`, `already_active`, or specific bounded failure categories (`failed_validation`, `failed_duplicate_identifier`, `failed_target_not_active`, `failed_not_staged`, `failed_not_acknowledged`, `failed_not_found`, `failed_timeout`, `failed_unavailable`, `failed_persistence`, `ambiguous_persistence`, `failed_unconfigured`).
+- **Sanitized Identifiers**: `credential_id`, `subject`, `replacement_id`, and `lock_target` are strictly sanitized to strip control characters and newlines (`[\x00-\x1f\x7f-\x9f]` mapped to `_`), bounding length to prevent log-injection or newline-splitting attacks.
+- **Strict Data Exclusion**: Plaintext tokens, secret keys, SHA-256 digests, authorization headers, raw manifest JSON documents, and untrusted exception messages are strictly forbidden from log output.
+
+### Distinction: Operational Application Logs vs Tamper-Evident Ledger
+Operational application logs recorded via `audit.security.credentials` serve operational monitoring, alerting, and local diagnostics. They are **not** an append-only, cryptographically verified data store. They do not replace, alter, or substitute for the immutable hash-chained audit ledger maintained by the Audit Log Service.
+
+## Platform Locking Verification and CI
+
+Cross-process mutual exclusion relies on native OS file locking:
+- **Linux / POSIX**: Employs `fcntl.flock` with non-blocking exclusive acquisition (`LOCK_EX | LOCK_NB`) and explicit release (`LOCK_UN`).
+- **Windows**: Employs `msvcrt.locking` with non-blocking single-byte locking (`LK_NBLCK`, `LK_UNLCK`).
+
+In GitHub Actions CI (`.github/workflows/tests.yml`):
+- Windows CI (`test` job on `windows-latest`) tests the entire application stack under Windows file locking and verifies line/branch coverage thresholds (>= 85%).
+- Linux CI (`linux-security-controls` job on `ubuntu-latest`) executes `tests/test_security_controls.py` on Linux, enforcing zero skips and explicitly asserting native POSIX `fcntl.flock` execution.
+
 Without a configured manifest, development retains the historical built-in
 development key and explicit `AUDIT_API_KEYS` compatibility behavior. Production
 must configure `AUDIT_CREDENTIAL_MANIFEST`; otherwise authenticated requests

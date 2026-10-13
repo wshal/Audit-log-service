@@ -704,3 +704,141 @@ def test_end_to_end_ideal_workflow(client):
     exported = client.get("/audit/export?resourceId=client-demo").json()
     assert exported["totalRecords"] == 3
     assert len(exported["integrityManifests"]) == 1
+
+
+def test_administrative_lifecycle_operations_emit_structured_events(monkeypatch, tmp_path, caplog):
+    path = tmp_path / "credentials.json"
+    monkeypatch.setenv("AUDIT_CREDENTIAL_MANIFEST", str(path))
+
+    with caplog.at_level("INFO", logger="audit.security.credentials"):
+        # 1. Provision
+        token1 = provision("alice", ["reader"], expires_at="2099-01-01T00:00:00Z", credential_id="cred-alice")
+        assert "action=credential_provisioned outcome=success credential_id=cred-alice subject=alice" in caplog.text
+
+        # 2. Rotate
+        caplog.clear()
+        token2 = rotate("cred-alice", "alice", ["reader"], expires_at="2099-01-01T00:00:00Z", replacement_id="cred-alice-v2")
+        assert "action=credential_rotated outcome=success credential_id=cred-alice replacement_id=cred-alice-v2 subject=alice" in caplog.text
+
+        # 3. Acknowledge delivery
+        caplog.clear()
+        acknowledge_delivery("cred-alice-v2")
+        assert "action=credential_delivery_acknowledged outcome=success credential_id=cred-alice-v2" in caplog.text
+
+        # 4. Activate
+        caplog.clear()
+        activate("cred-alice-v2")
+        assert "action=credential_activated outcome=success credential_id=cred-alice-v2 subject=alice" in caplog.text
+
+        # 4b. Idempotent activate (already active)
+        caplog.clear()
+        activate("cred-alice-v2")
+        assert "action=credential_activated outcome=already_active credential_id=cred-alice-v2 subject=alice" in caplog.text
+
+        # 5. Revoke
+        caplog.clear()
+        revoke("cred-alice-v2")
+        assert "action=credential_revoked outcome=success credential_id=cred-alice-v2 subject=alice" in caplog.text
+
+    # Verify no tokens or SHA-256 digests appear anywhere in any logged output
+    all_logs = caplog.text
+    assert token1 not in all_logs
+    assert token2 not in all_logs
+    assert hashlib.sha256(token1.encode()).hexdigest() not in all_logs
+    assert hashlib.sha256(token2.encode()).hexdigest() not in all_logs
+
+
+def test_administrative_lifecycle_failures_emit_accurate_events(monkeypatch, tmp_path, caplog):
+    path = tmp_path / "credentials.json"
+    monkeypatch.setenv("AUDIT_CREDENTIAL_MANIFEST", str(path))
+
+    with caplog.at_level("INFO", logger="audit.security.credentials"):
+        # Initial valid provision
+        provision("bob", ["reader"], expires_at="2099-01-01T00:00:00Z", credential_id="cred-bob")
+
+        # 1. Duplicate provision failure
+        caplog.clear()
+        with pytest.raises(CredentialAuthorityError, match="already exists"):
+            provision("bob", ["reader"], expires_at="2099-01-01T00:00:00Z", credential_id="cred-bob")
+        assert "action=credential_provisioned outcome=failed_duplicate_identifier credential_id=cred-bob subject=bob" in caplog.text
+
+        # 2. Rotate non-existent / not active
+        caplog.clear()
+        with pytest.raises(CredentialAuthorityError, match="not active"):
+            rotate("nonexistent", "bob", ["reader"], expires_at="2099-01-01T00:00:00Z", replacement_id="repl-1")
+        assert "action=credential_rotated outcome=failed_target_not_active credential_id=nonexistent replacement_id=repl-1" in caplog.text
+
+        # 3. Rotate duplicate replacement ID
+        caplog.clear()
+        with pytest.raises(CredentialAuthorityError, match="already exists"):
+            rotate("cred-bob", "bob", ["reader"], expires_at="2099-01-01T00:00:00Z", replacement_id="cred-bob")
+        assert "action=credential_rotated outcome=failed_duplicate_identifier credential_id=cred-bob replacement_id=cred-bob" in caplog.text
+
+        # 4. Acknowledge delivery for non-staged
+        caplog.clear()
+        with pytest.raises(CredentialAuthorityError, match="not staged"):
+            acknowledge_delivery("cred-bob")
+        assert "action=credential_delivery_acknowledged outcome=failed_not_staged credential_id=cred-bob" in caplog.text
+
+        # 5. Activate non-existent
+        caplog.clear()
+        with pytest.raises(CredentialAuthorityError, match="not found"):
+            activate("nonexistent")
+        assert "action=credential_activated outcome=failed_not_found credential_id=nonexistent" in caplog.text
+
+        # 6. Activate unacknowledged staged credential
+        token_staged = rotate("cred-bob", "bob", ["reader"], expires_at="2099-01-01T00:00:00Z", replacement_id="cred-bob-v2")
+        caplog.clear()
+        with pytest.raises(CredentialAuthorityError, match="acknowledgement is required"):
+            activate("cred-bob-v2")
+        assert "action=credential_activated outcome=failed_not_acknowledged credential_id=cred-bob-v2 subject=bob" in caplog.text
+
+        # 7. Revoke non-existent
+        caplog.clear()
+        with pytest.raises(CredentialAuthorityError, match="not found"):
+            revoke("nonexistent")
+        assert "action=credential_revoked outcome=failed_not_found credential_id=nonexistent" in caplog.text
+
+        # 8. Unconfigured authority
+        monkeypatch.delenv("AUDIT_CREDENTIAL_MANIFEST", raising=False)
+        caplog.clear()
+        with pytest.raises(CredentialAuthorityError, match="not configured"):
+            provision("charlie", ["reader"], expires_at="2099-01-01T00:00:00Z", credential_id="cred-charlie")
+        assert "action=credential_provisioned outcome=failed_unconfigured subject=charlie" in caplog.text
+
+
+def test_administrative_lifecycle_sanitizes_hostile_identifiers(monkeypatch, tmp_path, caplog):
+    path = tmp_path / "credentials.json"
+    monkeypatch.setenv("AUDIT_CREDENTIAL_MANIFEST", str(path))
+
+    with caplog.at_level("INFO", logger="audit.security.credentials"):
+        # Hostile identifiers containing CRLF injection and control characters
+        hostile_subject = "operator\r\nINJECTED_LOG_ENTRY action=pwned\x00"
+        hostile_id = "cred-1\r\nANOTHER_INJECTION\t"
+
+        provision(hostile_subject, ["reader"], expires_at="2099-01-01T00:00:00Z", credential_id=hostile_id)
+
+        # Confirm no raw newlines or control characters exist inside log records
+        assert len(caplog.records) == 1
+        msg = caplog.records[0].getMessage()
+        assert "\r" not in msg
+        assert "\n" not in msg
+        assert "\x00" not in msg
+        assert "cred-1__ANOTHER_INJECTION" in msg
+        assert "operator__INJECTED_LOG_ENTRY action=pwned_" in msg
+
+
+def test_operator_lock_posix_branch_coverage(monkeypatch, tmp_path):
+    import sys
+    calls = []
+    fake_fcntl = type("FakeFcntl", (), {
+        "LOCK_EX": 2, "LOCK_NB": 4, "LOCK_UN": 8,
+        "flock": lambda fd, op: calls.append(op),
+    })
+    path = tmp_path / "creds.json"
+    path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(os, "name", "posix")
+    monkeypatch.setitem(sys.modules, "fcntl", fake_fcntl)
+    with _operator_lock(path):
+        pass
+    assert calls == [fake_fcntl.LOCK_EX | fake_fcntl.LOCK_NB, fake_fcntl.LOCK_UN]
