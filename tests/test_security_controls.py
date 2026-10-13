@@ -3,6 +3,7 @@
 import pytest
 import hashlib
 import json
+import logging
 import multiprocessing
 import os
 import traceback
@@ -747,6 +748,7 @@ def test_end_to_end_ideal_workflow(client):
 def test_administrative_lifecycle_operations_emit_structured_events(monkeypatch, tmp_path, caplog):
     path = tmp_path / "credentials.json"
     monkeypatch.setenv("AUDIT_CREDENTIAL_MANIFEST", str(path))
+    monkeypatch.setattr(logging.getLogger("audit.security.credentials"), "disabled", False)
 
     with caplog.at_level("INFO", logger="audit.security.credentials"):
         # 1. Provision
@@ -786,9 +788,23 @@ def test_administrative_lifecycle_operations_emit_structured_events(monkeypatch,
     assert hashlib.sha256(token2.encode()).hexdigest() not in all_logs
 
 
+def test_lifecycle_logger_respects_intentionally_disabled_logger(monkeypatch, tmp_path, caplog):
+    path = tmp_path / "credentials.json"
+    monkeypatch.setenv("AUDIT_CREDENTIAL_MANIFEST", str(path))
+    logger = logging.getLogger("audit.security.credentials")
+    monkeypatch.setattr(logger, "disabled", True)
+
+    with caplog.at_level("INFO", logger="audit.security.credentials"):
+        provision("disabled-user", ["reader"], expires_at="2099-01-01T00:00:00Z", credential_id="disabled-cred")
+
+    assert logger.disabled is True
+    assert not any(record.name == "audit.security.credentials" for record in caplog.records)
+
+
 def test_administrative_lifecycle_failures_emit_accurate_events(monkeypatch, tmp_path, caplog):
     path = tmp_path / "credentials.json"
     monkeypatch.setenv("AUDIT_CREDENTIAL_MANIFEST", str(path))
+    monkeypatch.setattr(logging.getLogger("audit.security.credentials"), "disabled", False)
 
     with caplog.at_level("INFO", logger="audit.security.credentials"):
         # Initial valid provision
@@ -848,6 +864,7 @@ def test_administrative_lifecycle_failures_emit_accurate_events(monkeypatch, tmp
 def test_administrative_lifecycle_sanitizes_hostile_identifiers(monkeypatch, tmp_path, caplog):
     path = tmp_path / "credentials.json"
     monkeypatch.setenv("AUDIT_CREDENTIAL_MANIFEST", str(path))
+    monkeypatch.setattr(logging.getLogger("audit.security.credentials"), "disabled", False)
 
     with caplog.at_level("INFO", logger="audit.security.credentials"):
         # Hostile identifiers containing CRLF injection and control characters

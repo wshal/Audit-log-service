@@ -18,16 +18,13 @@ from pathlib import Path
 from typing import Any
 
 class _LifecycleLogger:
-    """Logger wrapper that ensures security lifecycle events are not suppressed by disabled loggers."""
+    """Logger wrapper for sanitized credential lifecycle events."""
 
     def __init__(self, name: str) -> None:
         self._name = name
 
     def _get_logger(self) -> logging.Logger:
-        logger = logging.getLogger(self._name)
-        if logger.disabled:
-            logger.disabled = False
-        return logger
+        return logging.getLogger(self._name)
 
     def info(self, msg: Any, *args: Any, **kwargs: Any) -> None:
         self._get_logger().info(msg, *args, **kwargs)
