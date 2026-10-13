@@ -19,6 +19,89 @@ class CredentialAuthorityError(RuntimeError):
     """The credential authority cannot be trusted or is unavailable."""
 
 
+class CredentialAuthorityAmbiguousError(CredentialAuthorityError):
+    """A manifest replacement occurred but durability could not be confirmed."""
+
+
+_MAX_CREDENTIAL_ID = 128
+_MAX_SUBJECT = 128
+_MAX_TENANT_ID = 128
+_MAX_RESOURCE_TYPE = 128
+_MAX_RESOURCE_ID = 256
+_MAX_ROLE_OR_ACTION = 128
+_MAX_CREDENTIALS = 256
+_MAX_ROLES = 16
+_MAX_TENANT_GRANTS = 64
+_MAX_ACTIONS = 16
+_MAX_RESOURCE_SCOPES = 64
+_MAX_RESOURCE_VALUES = 256
+_ALLOWED_GRANT_ACTIONS = {"read", "write", "export", "compliance", "redact", "retain", "*"}
+
+
+def _bounded_text(value: Any, field: str, maximum: int) -> None:
+    if not isinstance(value, str) or not value or len(value) > maximum:
+        raise CredentialAuthorityError(f"invalid credential authority field: {field}")
+
+
+def _validate_resource_values(value: Any, field: str) -> None:
+    if value == "*":
+        return
+    if not isinstance(value, list):
+        raise CredentialAuthorityError(f"invalid credential authority field: {field}")
+    if len(value) > _MAX_RESOURCE_VALUES:
+        raise CredentialAuthorityError(f"credential authority collection is too large: {field}")
+    for item in value:
+        if isinstance(item, str):
+            _bounded_text(item, field, _MAX_RESOURCE_ID)
+        elif isinstance(item, dict):
+            _bounded_text(item.get("id"), f"{field}.id", _MAX_RESOURCE_ID)
+            if "type" in item:
+                _bounded_text(item["type"], f"{field}.type", _MAX_RESOURCE_TYPE)
+        else:
+            raise CredentialAuthorityError(f"invalid credential authority field: {field}")
+
+
+def _validate_tenant_grants(grants: Any) -> None:
+    if not isinstance(grants, list):
+        raise CredentialAuthorityError("invalid credential authority field: tenantGrants")
+    if len(grants) > _MAX_TENANT_GRANTS:
+        raise CredentialAuthorityError("credential authority collection is too large: tenantGrants")
+    for grant in grants:
+        if not isinstance(grant, dict):
+            raise CredentialAuthorityError("invalid credential authority grant")
+        _bounded_text(grant.get("tenantId"), "tenantGrants.tenantId", _MAX_TENANT_ID)
+        actions = grant.get("actions")
+        if not isinstance(actions, list) or not actions or len(actions) > _MAX_ACTIONS or any(
+            not isinstance(action, str)
+            or not action
+            or len(action) > _MAX_ROLE_OR_ACTION
+            or action not in _ALLOWED_GRANT_ACTIONS
+            for action in actions
+        ):
+            raise CredentialAuthorityError("invalid credential authority grant actions")
+        if "resourceType" in grant:
+            _bounded_text(grant["resourceType"], "tenantGrants.resourceType", _MAX_RESOURCE_TYPE)
+        for key in ("resourceIds", "resources"):
+            if key in grant:
+                _validate_resource_values(grant[key], f"tenantGrants.{key}")
+        scopes = grant.get("resourceScopes")
+        if scopes is not None:
+            if not isinstance(scopes, list):
+                raise CredentialAuthorityError("invalid credential authority field: tenantGrants.resourceScopes")
+            if len(scopes) > _MAX_RESOURCE_SCOPES:
+                raise CredentialAuthorityError("credential authority collection is too large: tenantGrants.resourceScopes")
+            for scope in scopes:
+                if not isinstance(scope, dict):
+                    raise CredentialAuthorityError("invalid credential authority resource scope")
+                if "resourceType" in scope:
+                    _bounded_text(scope["resourceType"], "tenantGrants.resourceScopes.resourceType", _MAX_RESOURCE_TYPE)
+                if "resourceIds" not in scope and "resources" not in scope:
+                    continue
+                for key in ("resourceIds", "resources"):
+                    if key in scope:
+                        _validate_resource_values(scope[key], f"tenantGrants.resourceScopes.{key}")
+
+
 def _manifest_path() -> Path | None:
     value = os.getenv("AUDIT_CREDENTIAL_MANIFEST", "").strip()
     return Path(value) if value else None
@@ -47,22 +130,31 @@ def _validate_manifest(document: Any) -> dict:
     credentials = document.get("credentials")
     if not isinstance(version, int) or version < 1 or not isinstance(credentials, dict):
         raise CredentialAuthorityError("invalid credential authority manifest")
+    if len(credentials) > _MAX_CREDENTIALS:
+        raise CredentialAuthorityError("credential authority collection is too large: credentials")
     validated: dict[str, dict] = {}
     for credential_id, entry in credentials.items():
         if not isinstance(credential_id, str) or not credential_id or not isinstance(entry, dict):
+            raise CredentialAuthorityError("invalid credential authority record")
+        if len(credential_id) > _MAX_CREDENTIAL_ID:
             raise CredentialAuthorityError("invalid credential authority record")
         digest = entry.get("digest")
         subject = entry.get("subject")
         status = entry.get("status")
         if (not isinstance(digest, str) or len(digest) != 64
                 or any(ch not in "0123456789abcdef" for ch in digest)
-                or not isinstance(subject, str) or not subject
+                or not isinstance(subject, str) or not subject or len(subject) > _MAX_SUBJECT
                 or status not in {"active", "staged", "revoked", "superseded"}):
             raise CredentialAuthorityError("invalid credential authority record")
         _parse_time(entry.get("issuedAt"), "issuedAt")
         expires = _parse_time(entry.get("expiresAt"), "expiresAt")
-        if not isinstance(entry.get("roles"), list) or not all(isinstance(role, str) for role in entry["roles"]):
+        if (not isinstance(entry.get("roles"), list)
+                or len(entry["roles"]) > _MAX_ROLES
+                or not all(isinstance(role, str) for role in entry["roles"])):
             raise CredentialAuthorityError("invalid credential authority record")
+        if any(not role or len(role) > _MAX_ROLE_OR_ACTION for role in entry["roles"]):
+            raise CredentialAuthorityError("invalid credential authority record")
+        _validate_tenant_grants(entry.get("tenantGrants", []))
         if "deliveryAcknowledged" in entry and not isinstance(entry["deliveryAcknowledged"], bool):
             raise CredentialAuthorityError("invalid credential authority record")
         # Expiry is derived from expiresAt; it is never serialized as a
@@ -156,8 +248,10 @@ def _operator_lock(path: Path, timeout: float = 5.0):
 
 
 def _durable_replace(path: Path, document: dict) -> None:
+    _validate_manifest(document)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent), text=True)
+    replaced = False
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
             json.dump(document, stream, sort_keys=True, separators=(",", ":"))
@@ -165,6 +259,7 @@ def _durable_replace(path: Path, document: dict) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
+        replaced = True
         directory_flag = getattr(os, "O_DIRECTORY", None)
         if directory_flag is not None:
             directory_fd = os.open(str(path.parent), directory_flag)
@@ -172,9 +267,13 @@ def _durable_replace(path: Path, document: dict) -> None:
                 os.fsync(directory_fd)
             finally:
                 os.close(directory_fd)
-    except Exception:
+    except Exception as exc:
         if os.path.exists(temporary):
             os.unlink(temporary)
+        if replaced:
+            raise CredentialAuthorityAmbiguousError(
+                "credential authority mutation outcome is ambiguous; inspect the manifest before retrying"
+            ) from exc
         raise
 
 
@@ -193,6 +292,10 @@ def _read_for_operator(path: Path) -> dict:
 
 def _new_entry(subject: str, roles: list[str], token: str, expires_at: str, *, status: str,
                tenant_grants: list[dict] | None = None) -> dict:
+    _bounded_text(subject, "subject", _MAX_SUBJECT)
+    if not isinstance(roles, list) or any(not isinstance(role, str) or not role or len(role) > _MAX_ROLE_OR_ACTION for role in roles):
+        raise CredentialAuthorityError("invalid credential authority roles")
+    _validate_tenant_grants(tenant_grants or [])
     _parse_time(expires_at, "expiresAt")
     return {
         "subject": subject, "digest": hashlib.sha256(token.encode("utf-8")).hexdigest(),
@@ -209,6 +312,7 @@ def provision(subject: str, roles: list[str], *, tenant_grants: list[dict] | Non
         raise CredentialAuthorityError("credential authority is not configured")
     token = generate_token()
     credential_id = credential_id or f"credential-{secrets.token_hex(8)}"
+    _bounded_text(credential_id, "credentialId", _MAX_CREDENTIAL_ID)
     with _operator_lock(path):
         document = _read_for_operator(path)
         if credential_id in document["credentials"]:
@@ -219,6 +323,8 @@ def provision(subject: str, roles: list[str], *, tenant_grants: list[dict] | Non
         )
         try:
             _durable_replace(path, document)
+        except CredentialAuthorityAmbiguousError:
+            raise
         except Exception as exc:
             raise CredentialAuthorityError("credential provisioning persistence failed") from exc
     return token
@@ -232,6 +338,7 @@ def rotate(credential_id: str, subject: str, roles: list[str], *, expires_at: st
         raise CredentialAuthorityError("credential authority is not configured")
     token = generate_token()
     replacement_id = replacement_id or f"credential-{secrets.token_hex(8)}"
+    _bounded_text(replacement_id, "credentialId", _MAX_CREDENTIAL_ID)
     with _operator_lock(path):
         document = load_manifest()
         old = document["credentials"].get(credential_id)
@@ -245,6 +352,8 @@ def rotate(credential_id: str, subject: str, roles: list[str], *, expires_at: st
         )
         try:
             _durable_replace(path, document)
+        except CredentialAuthorityAmbiguousError:
+            raise
         except Exception as exc:
             raise CredentialAuthorityError("credential staging persistence failed") from exc
     return token
@@ -261,7 +370,12 @@ def acknowledge_delivery(credential_id: str) -> None:
             raise CredentialAuthorityError("credential is not staged")
         entry["deliveryAcknowledged"] = True
         document["manifestVersion"] += 1
-        _durable_replace(path, document)
+        try:
+            _durable_replace(path, document)
+        except CredentialAuthorityAmbiguousError:
+            raise
+        except Exception as exc:
+            raise CredentialAuthorityError("credential delivery acknowledgement persistence failed") from exc
 
 
 def activate(credential_id: str) -> None:
@@ -285,8 +399,10 @@ def activate(credential_id: str) -> None:
         document["manifestVersion"] += 1
         try:
             _durable_replace(path, document)
+        except CredentialAuthorityAmbiguousError:
+            raise
         except Exception as exc:
-            raise CredentialAuthorityError("credential activation persistence outcome is ambiguous") from exc
+            raise CredentialAuthorityError("credential activation persistence failed") from exc
 
 
 def revoke(credential_id: str) -> None:
@@ -302,5 +418,7 @@ def revoke(credential_id: str) -> None:
         document["manifestVersion"] += 1
         try:
             _durable_replace(path, document)
+        except CredentialAuthorityAmbiguousError:
+            raise
         except Exception as exc:
-            raise CredentialAuthorityError("credential revocation persistence outcome is ambiguous") from exc
+            raise CredentialAuthorityError("credential revocation persistence failed") from exc

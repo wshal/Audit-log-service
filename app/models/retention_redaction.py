@@ -30,7 +30,7 @@ class RedactionRequest(BaseModel):
     """
     Request to redact specific sensitive keys in a record's payload (e.g. SSN, accountNumber).
     """
-    sequenceNum: int = Field(..., description="Target record sequence number")
+    sequenceNum: int = Field(..., ge=1, description="Target record sequence number")
     fieldPaths: List[str] = Field(..., min_length=1, description="List of top-level JSON payload keys to redact, e.g. ['accountNumber', 'ssn']")
     reason: str = Field(..., min_length=1, max_length=256, description="Regulatory justification, e.g. GDPR Right to be Forgotten, PII removal")
 

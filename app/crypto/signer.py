@@ -4,11 +4,50 @@ import base64
 import binascii
 import json
 import os
+import tempfile
+import time
+from contextlib import contextmanager
 from pathlib import Path
 from functools import lru_cache
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+
+@contextmanager
+def _development_key_lock(key_path: Path):
+    """Serialize development-only first-key creation without replacing a key."""
+    lock_path = key_path.with_name(f".{key_path.name}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + 30
+    acquired = False
+    try:
+        while True:
+            try:
+                os.mkdir(lock_path)
+                acquired = True
+                break
+            except FileExistsError:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("Timed out acquiring development signing key lock")
+                time.sleep(0.05)
+        yield
+    finally:
+        if acquired:
+            try:
+                os.rmdir(lock_path)
+            except OSError:
+                pass
+
+
+def _load_development_key(key_path: Path) -> Ed25519PrivateKey:
+    try:
+        raw = base64.b64decode(key_path.read_text(encoding="ascii"), validate=True)
+    except (OSError, UnicodeError, ValueError, binascii.Error) as exc:
+        raise RuntimeError("Development signing key file is invalid") from exc
+    if len(raw) != 32:
+        raise RuntimeError("Development signing key file is invalid")
+    return Ed25519PrivateKey.from_private_bytes(raw)
 
 
 @lru_cache(maxsize=1)
@@ -26,19 +65,34 @@ def _private_key() -> Ed25519PrivateKey:
     key_path = Path(os.getenv("AUDIT_DEVELOPMENT_KEY_PATH", "local_data/audit_signing_ed25519.key"))
     key_path.parent.mkdir(parents=True, exist_ok=True)
     if key_path.exists():
-        raw = base64.b64decode(key_path.read_text(encoding="ascii"), validate=True)
-        if len(raw) != 32:
-            raise RuntimeError("Development signing key file is invalid")
-        return Ed25519PrivateKey.from_private_bytes(raw)
-    key = Ed25519PrivateKey.generate()
-    from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat
-    raw = key.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())
-    key_path.write_text(base64.b64encode(raw).decode("ascii"), encoding="ascii")
-    try:
-        os.chmod(key_path, 0o600)
-    except OSError:
-        pass
-    return key
+        return _load_development_key(key_path)
+    with _development_key_lock(key_path):
+        # Another initializer may have completed while this process waited.
+        if key_path.exists():
+            return _load_development_key(key_path)
+        key = Ed25519PrivateKey.generate()
+        from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat
+        raw = key.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())
+        temporary = None
+        try:
+            fd, temporary = tempfile.mkstemp(
+                prefix=f".{key_path.name}.", dir=str(key_path.parent), text=True
+            )
+            with os.fdopen(fd, "w", encoding="ascii") as stream:
+                stream.write(base64.b64encode(raw).decode("ascii"))
+                stream.flush()
+                os.fsync(stream.fileno())
+            try:
+                os.chmod(temporary, 0o600)
+            except OSError:
+                pass
+            os.replace(temporary, key_path)
+            temporary = None
+        except Exception as exc:
+            if temporary and os.path.exists(temporary):
+                os.unlink(temporary)
+            raise RuntimeError("Development signing key persistence failed") from exc
+        return key
 
 
 def signing_key_id() -> str:

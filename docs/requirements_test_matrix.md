@@ -23,16 +23,21 @@ available from the accessible job logs.
 | CHK-01 | Versioned checkpoint schema, deterministic signed bytes, separate key verification, and explicit prefix outcomes | `tests/test_checkpoints.py::test_checkpoint_serialization_is_deterministic_and_excludes_signature`, `test_checkpoint_signature_uses_separate_trusted_key_ring`, `test_checkpoint_verifier_distinguishes_identity_signature_and_hash_failures` | Tested on PR #7 source `76e9321`; external publication remains unimplemented |
 | CHK-02 | Local ledger integrity is verified before checkpoint success; invalid chain, signatures, state, transitions, and suffixes fail closed | `tests/test_checkpoints.py::test_checkpoint_rejects_tampered_earlier_signature`, `test_checkpoint_rejects_broken_chain_and_missing_state`, `test_checkpoint_rejects_invalid_v1_v2_transition_evidence`, `test_invalid_suffix_does_not_look_like_unanchored_suffix` | Tested on PR #7 source `76e9321`; external checkpoint storage remains unimplemented |
 
-Latest current working-tree validation is **212 passed, 12 skipped**. The
-twelve local skips are PostgreSQL-backed cases not selected without PostgreSQL
-connection configuration. The separate required-mode PostgreSQL 16 execution
-completed **22 passed, zero skipped** against `audit_test`; it is not added to
-the default-suite total. The recorded CI run provides additional PostgreSQL
-execution evidence; local SQLite/default, local PostgreSQL, and CI results are
-intentionally reported separately.
+The earlier PostgreSQL-unconfigured working-tree validation was **249 passed,
+12 skipped**. With the guarded PostgreSQL environment configured, the latest
+current working-tree validation is **261 passed, 0 skipped**, with one existing
+Starlette/httpx deprecation warning. The focused endpoint/integrity/security
+validation is **99 passed, 1 warning**. Compilation and `git diff --check`
+passed. The current PostgreSQL 16.15 execution completed **22 passed, zero
+skipped, 1 warning** against `audit_test`. These results apply to the current
+uncommitted tree; the recorded CI run provides historical PostgreSQL execution
+evidence, and local SQLite/default, local PostgreSQL, and CI results remain
+distinct.
 
-Coverage is measured with `pytest-cov` using line and branch instrumentation. The
-85% combined gate is intentionally below the measured baseline to leave room for
+Coverage is measured with `pytest-cov` using line and branch instrumentation. It
+was not rerun for the latest working-tree validation; previously recorded
+coverage values are historical and are not current evidence. The 85% combined
+gate is intentionally below the measured baseline to leave room for
 platform-dependent startup and error branches while preventing material
 regression. Branch coverage is reported and reviewed separately; it is not
 claimed as PostgreSQL or distributed-system evidence.

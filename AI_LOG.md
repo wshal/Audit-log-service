@@ -952,3 +952,106 @@ application cannot reliably discover effective worker/replica counts, so no
 misleading startup guard was added. A shared limiter remains conditional on a
 future multi-instance deployment decision. Existing rate-limit implementation,
 request limits, authentication, and response semantics were unchanged.
+
+## Entry 68 - Development signing-key crash-safety and current validation
+
+**Date:** 2026-10-13
+
+Prompt 32 added bounded cross-process locking for development-only first-start
+signing-key initialization, atomic temporary-file creation with flush/fsync and
+restrictive permissions, strict malformed-key loading, and regression coverage
+for concurrent first starts and partial key files. Production still requires
+explicit `AUDIT_SIGNING_PRIVATE_KEY` material; no production key fallback was
+introduced. The implementation and tests remain uncommitted on top of HEAD
+`d6e319a295ae7586b1e0e23422d349c1d43256a1`.
+
+Validation recorded for the current working tree:
+
+- `\.venv\Scripts\python -m pytest tests/test_security_controls.py tests/test_preflight_quarantine.py -q`: **86 passed, 1 warning**.
+- `\.venv\Scripts\python -m pytest -q`: **234 passed, 12 skipped, 1 warning**.
+- `\.venv\Scripts\python -m pytest tests/postgres -q -rs`: **10 passed, 12 skipped, 1 warning**; the twelve
+  database-backed cases were skipped because `POSTGRES_TEST_DATABASE_URL` was
+  not configured, so no PostgreSQL execution is claimed.
+- `\.venv\Scripts\python -m compileall -q app tests alembic` and `git diff --check` passed.
+
+Coverage was not rerun for this working tree; previously recorded coverage
+percentages remain historical and are not current evidence. Historical CI and
+local PostgreSQL results refer to earlier revisions and do not validate this
+uncommitted tree. A stale lock directory after an initializer crash may require
+bounded-time operator cleanup; this is a safe-failure limitation rather than a
+partial-key overwrite path.
+
+## Entry 69 - Bound credential-manifest collection sizes
+
+**Date:** 2026-10-13
+
+Added resource-safety bounds to the operator-managed credential manifest. The
+validator now accepts at most 256 credentials, 16 roles per credential, 64
+tenant grants per credential, 16 actions per grant, 64 resource scopes per
+grant, and 256 resource values per resource list. The same validation runs
+before durable lifecycle replacement, so provisioning and staged rotation
+cannot persist oversized collections. No collection is truncated and existing
+authorization semantics are unchanged.
+
+Added boundary tests for accepted and rejected collection sizes, fail-closed
+authentication, and lifecycle preservation. Validation for the current
+uncommitted working tree:
+
+- `\.venv\Scripts\python -m pytest tests/test_security_controls.py -q`:
+  **60 passed, 1 warning**.
+- `\.venv\Scripts\python -m pytest tests/test_security_controls.py tests/test_tenant_authorization.py -q`:
+  **100 passed, 1 warning**.
+- `\.venv\Scripts\python -m pytest -q`: **247 passed, 12 skipped, 1 warning**.
+- `\.venv\Scripts\python -m compileall -q app tests alembic` and
+  `git diff --check` passed.
+
+The twelve skipped cases are PostgreSQL-backed tests; no PostgreSQL execution
+was performed against this working tree.
+
+## Entry 70 - Bound audit-query resource consumption
+
+**Date:** 2026-10-13
+
+The audit repository now uses SQL `COUNT`, deterministic sequence ordering,
+`OFFSET`, and `LIMIT` for queries without timestamp bounds, avoiding full
+candidate materialization for the common path. Timestamp-bounded queries
+retain instant-aware Python filtering because historical timestamps may use
+mixed precision. Query offsets are bounded at 100,000 as a resource guard;
+this does not replace SQL-level pagination. Tenant/resource authorization
+predicates remain applied before counting and page retrieval.
+
+Added endpoint coverage for the offset boundary and a repository regression
+that captures SQL statements and verifies pagination is emitted by the
+database. Current working-tree validation:
+
+- Focused endpoint, integrity, and tenant tests: **79 passed, 1 warning**.
+- Focused endpoint, integrity, tenant, and security tests: **139 passed, 1 warning**.
+- Full suite: **249 passed, 12 skipped, 1 warning**.
+- `\.venv\Scripts\python -m compileall -q app tests alembic` and
+  `git diff --check` passed.
+
+PostgreSQL was not executed against this working tree; the twelve skipped
+tests remain database-backed PostgreSQL cases.
+
+## Entry 71 - PostgreSQL-enabled current working-tree validation
+
+**Date:** 2026-10-13
+
+Revalidated the current uncommitted working tree on branch
+`review/release-docs-final` at HEAD `d6e319a295ae7586b1e0e23422d349c1d43256a1`.
+The PostgreSQL password was supplied through the local `PGPASSFILE` outside the
+repository; no credential value was recorded.
+
+Validation:
+
+- `\.venv\Scripts\python -m pytest tests/postgres -q -rs`: PostgreSQL 16.15,
+  **22 passed, 0 skipped, 1 warning**.
+- `\.venv\Scripts\python -m pytest -q` with the same guarded PostgreSQL
+  environment: **261 passed, 0 skipped, 1 warning**.
+- `\.venv\Scripts\python -m compileall -q app tests alembic`: passed.
+- `git diff --check`: passed.
+
+The warning is the existing Starlette/httpx deprecation warning. These results
+apply to the current uncommitted working tree, not to a committed revision or
+CI run. Coverage was not rerun. The historical PR #7 CI evidence remains bound
+to its documented source and merge revisions.

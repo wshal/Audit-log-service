@@ -1,12 +1,13 @@
 """Regression tests for integrity boundaries not covered by the happy paths."""
 
 from concurrent.futures import ThreadPoolExecutor
+import sys
 import pytest
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker
 
-from app.models.schemas import AuditEventCreate, ViolationType
+from app.models.schemas import AuditEventCreate, QueryFilters, ViolationType
 from app.storage.database import AuditRecordEntity, Base, LedgerStateEntity, initialize_ledger_state
 from app.storage.repository import AuditLedgerRepository
 from app.security import Principal
@@ -15,6 +16,23 @@ from app.crypto.hasher import canonical_json
 from app.services.verifier import ChainVerificationService
 from app.services.lifecycle import LifecycleAndExportService
 from app.runtime_state import preflight_scope
+
+
+@pytest.fixture(autouse=True)
+def _dispose_sqlite_engines(monkeypatch):
+    """Dispose competing-writer engines on both success and failure paths."""
+    engines = []
+    original_create_engine = create_engine
+
+    def tracked_create_engine(*args, **kwargs):
+        engine = original_create_engine(*args, **kwargs)
+        engines.append(engine)
+        return engine
+
+    monkeypatch.setattr(sys.modules[__name__], "create_engine", tracked_create_engine)
+    yield
+    for engine in engines:
+        engine.dispose()
 
 
 def test_redacted_record_mutation_is_detected(client, db_session):
@@ -121,6 +139,39 @@ def test_mixed_precision_timestamp_filters_compare_instants(client):
     upper = client.get("/audit/events?toTime=2026-01-01T00:00:00Z&limit=10")
     assert upper.status_code == 200
     assert [item["timestamp"] for item in upper.json()["items"]] == ["2026-01-01T00:00:00Z"]
+
+
+def test_unbounded_query_uses_sql_pagination_without_materializing_all_rows(db_session):
+    writer = Principal("writer", frozenset({"writer"}), "writer", (), True, True)
+    repo = AuditLedgerRepository(db_session)
+    for resource_id in ("sql-page-1", "sql-page-2"):
+        repo.append_event(
+            AuditEventCreate(
+                eventType="SQL_PAGE",
+                actorId="writer",
+                resourceType="SESSION",
+                resourceId=resource_id,
+                payload={},
+                timestamp="2026-01-01T00:00:00Z",
+            ),
+            writer,
+        )
+
+    statements = []
+
+    def capture(_connection, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement.upper())
+
+    event.listen(db_session.bind, "before_cursor_execute", capture)
+    try:
+        auditor = Principal("auditor", frozenset({"reader", "global_auditor"}), "auditor", (), True)
+        rows, total = repo.query_events(QueryFilters(limit=1, offset=1), principal=auditor)
+    finally:
+        event.remove(db_session.bind, "before_cursor_execute", capture)
+
+    assert total == 2
+    assert [row.resource_id for row in rows] == ["sql-page-2"]
+    assert any("LIMIT" in statement and "OFFSET" in statement for statement in statements)
 
 
 @pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity"])

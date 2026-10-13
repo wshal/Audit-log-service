@@ -167,11 +167,14 @@ python -m pytest -q
 python -m pytest -q --cov=app --cov-branch --cov-report=term-missing --cov-report=xml --cov-fail-under=85
 python -m compileall -q app tests
 ```
-The latest current working-tree run contains **212 passed, 12 skipped** tests
-(including configuration failure regressions). The twelve skips are PostgreSQL
-database-backed tests because this default invocation has no PostgreSQL
-connection configuration. They
-validate:
+The earlier PostgreSQL-unconfigured working-tree run contained **249 passed,
+12 skipped** tests; the twelve skips were PostgreSQL database-backed tests.
+With the guarded PostgreSQL environment configured, the latest current
+working-tree full suite contains **261 passed, 0 skipped** tests. The focused
+endpoint/integrity/security run contains
+**99 passed, 1 warning**. The warning is the existing Starlette/httpx
+deprecation warning. Compilation and `git diff --check` passed. The current
+suite validates:
 - Append-only write & hash chain linking
 - Multi-parameter indexed querying
 - Tamper detection upon direct database payload modification
@@ -184,10 +187,10 @@ validate:
 - Regulatory compliance reporting and anomaly detection
 - API authentication/role enforcement, Ed25519 record signatures, offline signature verification, lifecycle-manifest witnesses, and archival-state tamper detection
 
-Coverage is measured with `pytest-cov`: the latest current working-tree run is
-88.02% combined coverage (the earlier 91.08% line / 78.76% branch / 88.27%
-combined measurement is retained as historical evidence). CI enforces an
-85% combined threshold. See [docs/requirements_test_matrix.md](docs/requirements_test_matrix.md)
+Coverage is measured with `pytest-cov`, but coverage was not rerun for this
+latest working-tree validation. The previously recorded 88.02% combined
+coverage is historical evidence for an earlier tree, not a current coverage
+claim. CI enforces an 85% combined threshold. See [docs/requirements_test_matrix.md](docs/requirements_test_matrix.md)
 for the maintained requirement-to-test mapping. The local default suite uses
 isolated SQLite. PostgreSQL integration infrastructure and tests are under
 `tests/postgres`. PR #7's [pull-request workflow](https://github.com/wshal/Audit-log-service/actions/runs/38293842786)
@@ -195,10 +198,10 @@ and [postgres-integration job](https://github.com/wshal/Audit-log-service/action
 passed for source commit `76e9321`; the [standard test job](https://github.com/wshal/Audit-log-service/actions/runs/38293842786/job/114960061509)
 also passed. The merge revision is `d21195c`. Detailed CI test counts were not
 independently available from the accessible job logs, so no CI count is claimed.
-Separately, the accepted local PostgreSQL 16 required-mode execution ran
-`tests/postgres` against the guarded `audit_test` database: **22 passed, zero
-skipped**. It is a separate invocation and must not be added to the default
-suite count.
+The current guarded PostgreSQL 16.15 execution ran `tests/postgres` against the
+isolated `audit_test` database: **22 passed, zero skipped, 1 warning**. The
+password was supplied through `PGPASSFILE` outside the repository. These results
+apply to the current uncommitted working tree; no current CI result is claimed.
 
 The current Phase B checkpoint contract is implemented in `app/checkpoint.py`
 and `app/services/checkpoint_verifier.py`, with focused coverage in

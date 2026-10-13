@@ -24,10 +24,10 @@ router = APIRouter(prefix="/audit/compliance", tags=["Regulatory Compliance"], d
     description="Allows regulators to audit all access to client data, inspect actor behavior, and review anomaly flags.",
 )
 def get_client_access_audit_report(
-    clientId: str = Query(..., description="Target client account ID to audit"),
-    fromTime: Optional[str] = Query(None, description="Start of regulatory audit window (ISO-8601)"),
-    toTime: Optional[str] = Query(None, description="End of regulatory audit window (ISO-8601)"),
-    actorId: Optional[str] = Query(None, description="Filter accesses by specific actor"),
+    clientId: str = Query(..., max_length=256, description="Target client account ID to audit"),
+    fromTime: Optional[str] = Query(None, max_length=64, description="Start of regulatory audit window (ISO-8601)"),
+    toTime: Optional[str] = Query(None, max_length=64, description="End of regulatory audit window (ISO-8601)"),
+    actorId: Optional[str] = Query(None, max_length=128, description="Filter accesses by specific actor"),
     db: Session = Depends(get_db),
     principal: Principal = Depends(require_roles("compliance_reviewer")),
 ):

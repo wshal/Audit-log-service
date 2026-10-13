@@ -9,8 +9,8 @@
 - **Source branch for PR #7**: `security/checkpoint-release-prep`
 - **PR #7 source revision**: `76e93211137e02d222d320757dab8a5e1f635bbc`
 - **Merged `main` revision**: `d21195c7550bc747e6130b1630d7e721ffe80540`
-- **Committed code scope**: authorization, integrity and recovery hardening; PostgreSQL migration, allocator, concurrency, rollback, checkpoint, credential, idempotency, rate-limit, and request-boundary work present in merged `main`.
-- **Current evidence scope**: the endpoint inventory, threat model, release-gap register, Prompt 24 rate-limit contract documentation, and prior attestation are committed in `3e5d242`; this digest metadata is the intended second, metadata-only commit and is not part of the `3e5d242` archive.
+- **Historical merged code scope**: authorization, integrity and recovery hardening; PostgreSQL migration, allocator, concurrency, rollback, checkpoint, idempotency, rate-limit, and request-boundary work present in merged `main` at `d21195c`. Subsequent credential-manifest, signing-key, and query-resource changes are current uncommitted working-tree changes and are not contained in that merged revision or its archive.
+- **Current evidence scope**: the endpoint inventory, threat model, release-gap register, Prompt 24 rate-limit contract documentation, and prior attestation are committed in `3e5d242`; subsequent documentation, implementation, and test changes remain uncommitted. The existing digest metadata is not part of the `3e5d242` archive.
 
 ## Dates and sign-off
 
@@ -21,7 +21,7 @@
 
 ## Artifact identity
 
-The code revision being attested is merged `main` revision
+The historical code revision described by this attestation is merged `main` revision
 `d21195c7550bc747e6130b1630d7e721ffe80540`. The documentation baseline is
 commit `3e5d2428fc448d7a5296fb6b299a6202c99b3aee`. A deterministic Git archive
 of that first documentation commit was generated with
@@ -35,7 +35,11 @@ with SHA-256. Repeating the command produced the same digest:
 
 This digest identifies the first documentation commit's archive only. The
 second commit contains this digest metadata and is deliberately not represented
-as covered by the digest, avoiding a circular archive update.
+as covered by the digest, avoiding a circular archive update. The current
+uncommitted working tree and any future release commit are not covered by this
+historical digest. After the substantive release commit exists, the attestation
+must be updated to identify that exact revision and any newly generated archive
+before final submission.
 
 ## Candidate declaration
 
@@ -55,7 +59,7 @@ third-party verification.
 | Tenant/resource authorization and actor attribution | `app/authorization.py`, `app/security.py`, `app/routers/`, `app/storage/repository.py` | `tests/test_tenant_authorization.py`, `tests/test_security_controls.py` | Implemented and tested in the recorded suites |
 | Hash/signature integrity, V1/V2 compatibility, migration safety | `app/crypto/`, `app/services/verifier.py`, `app/storage/database.py`, `alembic/` | Integrity, migration, and PostgreSQL tests; PR #7 checks successful | Implemented; exact CI test counts not independently available here |
 | PostgreSQL concurrency and rollback | `app/storage/repository.py`, `tests/postgres/test_concurrency.py` | PR #7 `postgres-integration` job succeeded; local required-mode runs recorded in `AI_LOG.md` | Evidence available; detailed PR #7 counts unavailable from accessible logs |
-| Credential, request, rate-limit, idempotency, and quarantine controls | `app/credential_store.py`, `app/main.py`, `app/rate_limit.py`, `app/storage/repository.py`, `app/runtime_state.py` | Named tests in `docs/requirements_test_matrix.md` and CI workflow | Implemented in prototype scope; deployment assumptions remain |
+| Credential, request, rate-limit, idempotency, and quarantine controls | `app/credential_store.py`, `app/main.py`, `app/rate_limit.py`, `app/storage/repository.py`, `app/runtime_state.py` | Named tests in `docs/requirements_test_matrix.md` and current working-tree validation | Implemented in prototype scope; the credential/query/signing additions remain uncommitted and deployment assumptions remain |
 | Local signed checkpoint comparison | `app/checkpoint.py`, `app/services/checkpoint_verifier.py` | `tests/test_checkpoints.py` | Local verification only; no external immutable trust anchor |
 | Endpoint inventory and threat model | `docs/endpoint_security_inventory.md`, `docs/threat_model.md`, `tests/test_endpoint_inventory.py` | Route inventory and boundary tests | Documentation and executable inventory present |
 
@@ -65,5 +69,5 @@ third-party verification.
 - The in-process rate limiter is not a distributed/global limiter.
 - Checkpoints are locally verified signed objects; external publication, immutable storage, key custody, and independent detection of every valid-prefix tail truncation are not implemented.
 - The project-specific Python JSON serialization format is not RFC 8785/JCS.
-- PostgreSQL CI success is recorded for PR #7 source revision `76e9321`; detailed executed/passed/skipped counts were not independently retrievable during this update.
+- PostgreSQL CI success is recorded for PR #7 source revision `76e9321`; current working-tree PostgreSQL execution is separately recorded in `AI_LOG.md` Entry 71 and is not CI or merged-revision evidence.
 - The attestation is not itself a cryptographic signature, archive digest, or proof of independent third-party review.

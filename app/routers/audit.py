@@ -18,6 +18,7 @@ from app.models.schemas import (
     PaginatedAuditResponse,
     QueryFilters,
     VerificationResult,
+    MAX_QUERY_OFFSET,
 )
 from app.services.verifier import ChainVerificationService
 from app.storage.database import AuditRecordEntity, get_engine, get_session_factory
@@ -120,15 +121,15 @@ def append_audit_event(
     description="Retrieve immutable audit records filtered by actor, resource, eventType, and date ranges.",
 )
 def query_audit_events(
-    actorId: Optional[str] = Query(None, description="Filter by actor identifier"),
-    resourceType: Optional[str] = Query(None, description="Filter by resource type"),
-    resourceId: Optional[str] = Query(None, description="Filter by resource ID"),
-    tenantId: Optional[str] = Query(None, description="Tenant scope (never trusted as ownership proof)"),
-    eventType: Optional[str] = Query(None, description="Filter by event type"),
-    fromTime: Optional[str] = Query(None, description="ISO-8601 start timestamp"),
-    toTime: Optional[str] = Query(None, description="ISO-8601 end timestamp"),
+    actorId: Optional[str] = Query(None, max_length=128, description="Filter by actor identifier"),
+    resourceType: Optional[str] = Query(None, max_length=128, description="Filter by resource type"),
+    resourceId: Optional[str] = Query(None, max_length=256, description="Filter by resource ID"),
+    tenantId: Optional[str] = Query(None, max_length=128, description="Tenant scope (never trusted as ownership proof)"),
+    eventType: Optional[str] = Query(None, max_length=128, description="Filter by event type"),
+    fromTime: Optional[str] = Query(None, max_length=64, description="ISO-8601 start timestamp"),
+    toTime: Optional[str] = Query(None, max_length=64, description="ISO-8601 end timestamp"),
     limit: int = Query(50, ge=1, le=1000, description="Page limit"),
-    offset: int = Query(0, ge=0, description="Offset index"),
+    offset: int = Query(0, ge=0, le=MAX_QUERY_OFFSET, description="Offset index"),
     db: Session = Depends(get_db),
     principal: Principal = Depends(require_roles("reader")),
 ):

@@ -1,5 +1,6 @@
 """Focused tests for the versioned schema and ledger-state foundation."""
 
+import sys
 import pytest
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import IntegrityError
@@ -20,6 +21,23 @@ from app.storage.database import (
     init_db,
     initialize_ledger_state,
 )
+
+
+@pytest.fixture(autouse=True)
+def _dispose_sqlite_engines(monkeypatch):
+    """Dispose every engine created by a migration test, including failures."""
+    engines = []
+    original_create_engine = create_engine
+
+    def tracked_create_engine(*args, **kwargs):
+        engine = original_create_engine(*args, **kwargs)
+        engines.append(engine)
+        return engine
+
+    monkeypatch.setattr(sys.modules[__name__], "create_engine", tracked_create_engine)
+    yield
+    for engine in engines:
+        engine.dispose()
 
 
 def _create_legacy_audit_table(connection):
@@ -180,9 +198,10 @@ def test_stamped_schema_wrong_type_is_rejected(tmp_path):
 
     with pytest.raises(RuntimeError, match="tenant_id schema is incompatible"):
         init_db(engine)
-    assert "INTEGER" in engine.connect().execute(text(
-        "SELECT sql FROM sqlite_master WHERE type='table' AND name='audit_records'"
-    )).scalar_one()
+    with engine.connect() as connection:
+        assert "INTEGER" in connection.execute(text(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='audit_records'"
+        )).scalar_one()
 
 
 def test_stamped_schema_wrong_nullability_is_rejected(tmp_path):
