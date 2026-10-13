@@ -49,7 +49,9 @@ This service guarantees an append-only, tamper-evident audit ledger:
 ├── AI_LOG.md                         # Section 4.3 AI traceability log
 ├── README.md                         # Architecture, design decisions, run instructions
 ├── pytest.ini                        # Pytest configuration
-├── requirements.txt                  # Python dependencies
+├── requirements.txt                  # Direct dependency declarations
+├── requirements.lock                 # Resolved runtime/test dependency lock
+├── requirements-postgres.lock        # Resolved PostgreSQL integration lock
 ├── docs/
 │   ├── architecture.md               # Deep-dive architecture and design trade-offs
 │   ├── audit_review.md               # Implementation audit and improvement record
@@ -100,9 +102,18 @@ This service guarantees an append-only, tamper-evident audit ledger:
 # On Windows PowerShell:
 .\.venv\Scripts\Activate.ps1
 
-# Install requirements:
-pip install -r requirements.txt
+# Install the resolved runtime/test set:
+pip install -r requirements.lock
+
+# Add PostgreSQL integration dependencies when needed:
+pip install -r requirements-postgres.lock
 ```
+
+Dependency locks are generated with `pip-tools` from the direct requirement
+files. CI installs the lock files, audits the resolved environment with
+`pip-audit`, generates a CycloneDX SBOM, and runs repository secret scanning.
+See [docs/supply_chain.md](docs/supply_chain.md) for update and exception
+procedures.
 
 ### Security Configuration
 

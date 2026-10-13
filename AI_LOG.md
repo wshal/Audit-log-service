@@ -1107,3 +1107,29 @@ PostgreSQL and Redis jobs used required-mode guards, so their zero skipped
 counts represent actual execution rather than silent skips. These are CI
 results for merged `ccc2db2`, distinct from earlier local and historical
 working-tree results.
+
+## Entry 73 - Supply-chain controls and clean-lock validation
+
+**Date:** 2026-10-13
+
+Started branch `security/supply-chain-reproducible-builds` from the verified
+merged `main` revision `19183dbc63a76259a90eb7585b77e7aa45d50f13`. Added
+pip-tools-generated runtime and PostgreSQL lock files, locked CI installation,
+strict pinned `pip-audit` scans, a CycloneDX SBOM artifact, and a Gitleaks CI
+job. Added `docs/supply_chain.md` with update, exception, and limitation
+guidance. No application code or attestation metadata was changed.
+
+Validation on the uncommitted branch:
+
+- Clean temporary virtual environment installed both lock files successfully;
+  its full suite completed **258 passed, 24 skipped, 1 warning**.
+- Existing `.venv` full suite completed **258 passed, 24 skipped, 1 warning**.
+- Lock-file `pip-audit --strict` scans for runtime and PostgreSQL inputs found
+  no known vulnerabilities locally; the CI job remains the release evidence.
+- Lock-input CycloneDX generation produced a valid SBOM with 46 components.
+- Compilation and `git diff --check` passed.
+
+The warning is the existing Starlette/httpx deprecation warning. PostgreSQL,
+Redis, and Gitleaks were not run locally in this workstream; their CI jobs and
+artifacts must be reviewed for the final revision. The lock files pin versions
+but do not claim package artifact hashes or bit-for-bit reproducible builds.
