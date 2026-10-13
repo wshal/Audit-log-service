@@ -41,6 +41,8 @@ The new signature and manifest checks intentionally reject records written by th
 
 Historical validation record: `\.venv\Scripts\python.exe -m pytest -q` completed with **33 passed** at the earlier review checkpoint. The earlier PostgreSQL-unconfigured working-tree run was **249 passed, 12 skipped**. With the guarded PostgreSQL environment configured, the latest current working-tree default suite is **261 passed, 0 skipped**, with one existing Starlette/httpx deprecation warning. The focused endpoint/integrity/security run completed with **99 passed, 1 warning**. Compilation and `git diff --check` passed. The current PostgreSQL 16.15 suite completed with **22 passed, zero skipped, 1 warning** against `audit_test`; these are current uncommitted-tree results, not CI evidence. Coverage was not rerun for this working tree. PR #7's [workflow](https://github.com/wshal/Audit-log-service/actions/runs/38293842786) and [postgres-integration job](https://github.com/wshal/Audit-log-service/actions/runs/38293842786/job/114960061221) passed for source `76e9321`, merged as `d21195c`; exact CI test counts were not independently available.
 
+Final merged-revision evidence is separate: workflow [38347892406](https://github.com/wshal/Audit-log-service/actions/runs/38347892406) tested `ccc2db2` and reported **253 passed, 18 skipped, 1 warning, 87.18% combined coverage** in the general job, **22 passed, 0 skipped, 1 warning** in PostgreSQL, and **8 passed, 0 skipped, 1 warning** in Redis. Historical and local working-tree results above remain unchanged.
+
 The merged Phase B checkpoint implementation is covered by
 `tests/test_checkpoints.py`. It validates a versioned signed checkpoint and
 requires authoritative full-ledger verification before reporting a matching

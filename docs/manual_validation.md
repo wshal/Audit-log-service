@@ -93,6 +93,13 @@ the combined flow is
 authorization coverage is in `tests/test_tenant_authorization.py`, and startup
 quarantine/direct-entry/recovery coverage is in `tests/test_preflight_quarantine.py`.
 
+For the merged revision, workflow [38347892406](https://github.com/wshal/Audit-log-service/actions/runs/38347892406)
+tested `ccc2db2` and reported **253 passed, 18 skipped, 1 warning** with
+**87.18% combined coverage**, **22 passed, 0 skipped, 1 warning** for
+PostgreSQL, and **8 passed, 0 skipped, 1 warning** for Redis. The PostgreSQL
+and Redis jobs were required-mode integrations and failed if their tests were
+skipped.
+
 For reproducible coverage and compile validation, run:
 
 ```powershell

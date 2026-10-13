@@ -7,6 +7,14 @@ integration suite lives under `tests/postgres`. PR #7's workflow and
 revision is `d21195c`. Detailed CI test counts were not independently
 available from the accessible job logs.
 
+The final merged revision is `ccc2db2e2c397f8637df0bc61fcb270b3a511a46`.
+Workflow [38347892406](https://github.com/wshal/Audit-log-service/actions/runs/38347892406)
+reported **253 passed, 18 skipped, 1 warning, 87.18% combined coverage** in
+the general job, **22 passed, 0 skipped, 1 warning** in PostgreSQL, and **8
+passed, 0 skipped, 1 warning** in Redis. These counts are CI results for the
+merged revision, distinct from the historical and local-working-tree results
+below.
+
 | ID | Requirement | Evidence | Status |
 |---|---|---|---|
 | AUTH-01 | Tenant and resource isolation, including direct selectors | `tests/test_tenant_authorization.py::test_two_tenant_resource_scope_and_direct_identifier_denial`, `test_same_tenant_but_ungranted_resource_and_export_are_denied`, `test_tenant_query_counts_and_pagination_do_not_disclose_foreign_rows` | Tested and verified |
@@ -19,7 +27,7 @@ available from the accessible job logs.
 | AUTH-08 | Recovery persistence, single-use reservation, restart, and failure handling | `tests/test_preflight_quarantine.py::test_recovery_token_concurrent_consumption_is_single_use`, `test_recovery_token_single_use_across_processes`, `test_restart_after_interruption_before_outcome_cannot_reuse_token`, `test_restart_after_outcome_before_marker_removal_cannot_reuse_token`, parametrized outcome-persistence failures | Tested and verified within the documented filesystem boundary |
 | AUTH-09 | Startup validates signing configuration before readiness; invalid production signing configuration quarantines the service | `tests/test_preflight_quarantine.py::test_production_missing_signing_key_quarantines_empty_ledger`, `test_production_invalid_public_key_ring_quarantines_empty_ledger`, `test_production_active_private_key_must_match_configured_public_key`, `test_production_malformed_private_key_quarantines_without_disclosing_value`, `test_valid_production_signing_configuration_is_ready_and_signs` | Tested and verified on PR #7 source `76e9321` |
 | CFG-01 | Malformed authentication and resource-registry configuration fails closed | `tests/test_security_controls.py::test_malformed_api_key_configuration_fails_closed`, `test_malformed_resource_registry_fails_closed` | Tested and verified |
-| DB-01 | PostgreSQL migration, constraints, allocator concurrency, and rollback | `tests/postgres/test_migrations.py`, `tests/postgres/test_concurrency.py`; [PR #7 workflow](https://github.com/wshal/Audit-log-service/actions/runs/38293842786) and [postgres-integration job](https://github.com/wshal/Audit-log-service/actions/runs/38293842786/job/114960061221) for source `76e9321` (merged as `d21195c`) | Executed in the recorded CI job; exact CI counts were not independently confirmed |
+| DB-01 | PostgreSQL migration, constraints, allocator concurrency, and rollback | `tests/postgres/test_migrations.py`, `tests/postgres/test_concurrency.py`; final [workflow](https://github.com/wshal/Audit-log-service/actions/runs/38347892406) and [postgres-integration job](https://github.com/wshal/Audit-log-service/actions/runs/38347892406/job/115133419904) for merged `ccc2db2` | Executed; 22 passed, 0 skipped, 1 warning |
 | CHK-01 | Versioned checkpoint schema, deterministic signed bytes, separate key verification, and explicit prefix outcomes | `tests/test_checkpoints.py::test_checkpoint_serialization_is_deterministic_and_excludes_signature`, `test_checkpoint_signature_uses_separate_trusted_key_ring`, `test_checkpoint_verifier_distinguishes_identity_signature_and_hash_failures` | Tested on PR #7 source `76e9321`; external publication remains unimplemented |
 | CHK-02 | Local ledger integrity is verified before checkpoint success; invalid chain, signatures, state, transitions, and suffixes fail closed | `tests/test_checkpoints.py::test_checkpoint_rejects_tampered_earlier_signature`, `test_checkpoint_rejects_broken_chain_and_missing_state`, `test_checkpoint_rejects_invalid_v1_v2_transition_evidence`, `test_invalid_suffix_does_not_look_like_unanchored_suffix` | Tested on PR #7 source `76e9321`; external checkpoint storage remains unimplemented |
 
