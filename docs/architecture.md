@@ -133,7 +133,7 @@ docker compose -f docker-compose.postgres.yml up -d --wait
 $env:PGPASSFILE = "$env:APPDATA\postgresql\pgpass.conf"
 $env:POSTGRES_TEST_DATABASE_URL = "postgresql+psycopg://audit@localhost:5432/audit_test"
 $env:POSTGRES_TEST_REQUIRED = "1"
-.venv\Scripts\python -m pip install -r requirements-postgres.txt
+.venv\Scripts\python -m pip install -r requirements.lock -r requirements-postgres.lock
 .venv\Scripts\python -m pytest tests/postgres -q -rs
 docker compose -f docker-compose.postgres.yml down -v
 ```
