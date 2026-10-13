@@ -48,6 +48,7 @@ local_data/
 # Testing and coverage
 .pytest_cache/
 .coverage
+coverage.xml
 htmlcov/
 
 # OS files
