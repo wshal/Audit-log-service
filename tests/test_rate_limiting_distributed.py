@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 
 import pytest
+from fastapi.testclient import TestClient
 
 from app.rate_limit import ConfiguredRateLimiter, RateLimitBackendUnavailable, RedisRateLimiter
 
@@ -104,3 +105,79 @@ def test_shared_backend_outage_is_reported(monkeypatch):
     monkeypatch.setenv("AUDIT_RATE_LIMIT_REDIS_TIMEOUT_SECONDS", "0.05")
     with pytest.raises(RateLimitBackendUnavailable):
         ConfiguredRateLimiter().allow("credential-a", capacity=1, window=60)
+
+
+@pytest.fixture
+def application_clients(monkeypatch):
+    """Build two independent ASGI apps that share one Redis namespace."""
+    import redis
+
+    from app.main import create_app
+    from app.security import _credentials
+
+    url = os.getenv("AUDIT_RATE_LIMIT_REDIS_URL", "").strip()
+    required = os.getenv("AUDIT_RATE_LIMIT_REQUIRED", "0") == "1"
+    if not url:
+        if required:
+            pytest.fail("AUDIT_RATE_LIMIT_REDIS_URL is required for distributed rate-limit tests")
+        pytest.skip("Redis rate-limit integration is not configured")
+
+    prefix = f"audit:test:app-ratelimit:{uuid4().hex}"
+    monkeypatch.setenv("AUDIT_RATE_LIMIT_BACKEND", "redis")
+    monkeypatch.setenv("AUDIT_RATE_LIMIT_REDIS_URL", url)
+    monkeypatch.setenv("AUDIT_RATE_LIMIT_REDIS_PREFIX", prefix)
+    monkeypatch.setenv("AUDIT_RATE_LIMIT_CAPACITY", "2")
+    monkeypatch.setenv("AUDIT_RATE_LIMIT_WINDOW_SECONDS", "60")
+    monkeypatch.setenv(
+        "AUDIT_API_KEYS",
+        '{"reader-a":{"subject":"reader-a","roles":["reader"]},'
+        '"reader-b":{"subject":"reader-b","roles":["reader"]}}',
+    )
+    _credentials.cache_clear()
+
+    first_app = create_app()
+    second_app = create_app()
+    try:
+        yield first_app, second_app
+    finally:
+        _credentials.cache_clear()
+        cleanup = redis.Redis.from_url(url, decode_responses=False)
+        try:
+            for key in cleanup.scan_iter(match=f"{prefix}:*"):
+                cleanup.delete(key)
+        finally:
+            cleanup.close()
+        for application in (first_app, second_app):
+            backend = getattr(application.state.rate_limiter, "_redis", None)
+            if backend is not None:
+                backend._client.close()
+
+
+def test_independent_app_instances_share_http_quota_and_isolate_identities(application_clients):
+    first_app, second_app = application_clients
+    with TestClient(
+        first_app,
+        headers={"X-API-Key": "reader-a"},
+        client=("10.0.0.1", 50001),
+    ) as first, TestClient(
+        second_app,
+        headers={"X-API-Key": "reader-a"},
+        client=("10.0.0.2", 50002),
+    ) as second:
+        assert first.get("/audit/events?limit=1").status_code == 200
+        assert second.get("/audit/events?limit=1").status_code == 200
+        blocked = first.get("/audit/events?limit=1")
+        assert blocked.status_code == 429
+        assert blocked.headers["retry-after"] == "60"
+
+    from app.security import _credentials
+
+    _credentials.cache_clear()
+    with TestClient(
+        first_app,
+        headers={"X-API-Key": "reader-b"},
+        client=("10.0.0.3", 50003),
+    ) as different_identity:
+        assert different_identity.get("/audit/events?limit=1").status_code == 200
+        assert different_identity.get("/audit/events?limit=1").status_code == 200
+        assert different_identity.get("/audit/events?limit=1").status_code == 429

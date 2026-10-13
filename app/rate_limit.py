@@ -204,9 +204,15 @@ def _client_key(request: Request) -> str:
     return client.host if client and client.host else "unknown-client"
 
 
-def _reject_or_unavailable(key: str, *, capacity: int, window: float) -> None:
+def _reject_or_unavailable(
+    key: str,
+    *,
+    capacity: int,
+    window: float,
+    backend: ConfiguredRateLimiter,
+) -> None:
     try:
-        allowed = limiter.allow(key, capacity=capacity, window=window)
+        allowed = backend.allow(key, capacity=capacity, window=window)
     except RateLimitBackendUnavailable as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -220,9 +226,19 @@ def _reject_or_unavailable(key: str, *, capacity: int, window: float) -> None:
         )
 
 
+def _request_limiter(request: Request) -> ConfiguredRateLimiter:
+    """Use the limiter owned by the ASGI application, when provided."""
+    return getattr(request.app.state, "rate_limiter", limiter)
+
+
 def enforce_ip_limit(request: Request) -> None:
     capacity, window = _limits()
-    _reject_or_unavailable(f"ip:{_client_key(request)}", capacity=capacity, window=window)
+    _reject_or_unavailable(
+        f"ip:{_client_key(request)}",
+        capacity=capacity,
+        window=window,
+        backend=_request_limiter(request),
+    )
 
 
 def enforce_authenticated_limit(
@@ -234,5 +250,10 @@ def enforce_authenticated_limit(
     # use caller-supplied identity headers or API-key material in the key.
     identity = principal.credential_id or principal.subject
     operation = f"{request.method}:{request.url.path}"
-    _reject_or_unavailable(f"principal:{identity}:{operation}", capacity=capacity, window=window)
+    _reject_or_unavailable(
+        f"principal:{identity}:{operation}",
+        capacity=capacity,
+        window=window,
+        backend=_request_limiter(request),
+    )
     return principal

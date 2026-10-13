@@ -22,7 +22,7 @@ from app.storage.database import get_engine, get_session_factory, init_db, initi
 from app.security import Principal
 from app.services.verifier import ChainVerificationService
 from app.runtime_state import get_state, set_state, preflight_scope
-from app.rate_limit import enforce_ip_limit
+from app.rate_limit import ConfiguredRateLimiter, enforce_ip_limit, limiter
 from app.crypto.signer import validate_signing_configuration
 
 
@@ -308,18 +308,6 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(
-    title=settings.APP_NAME,
-    version=settings.APP_VERSION,
-    description=(
-        "Production-grade, tamper-evident audit log microservice with cryptographic hash chaining, "
-        "structured redaction, configurable retention policies, and compliance reporting."
-    ),
-    lifespan=lifespan,
-)
-
-
-@app.exception_handler(RequestValidationError)
 async def validation_error_handler(request: Request, exc: RequestValidationError):
     """Return safe validation details without echoing non-finite payloads."""
     details = [
@@ -329,7 +317,6 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
     return JSONResponse(status_code=422, content={"detail": details})
 
 
-@app.middleware("http")
 async def quarantine_gate(request: Request, call_next):
     if request.url.path.startswith("/audit") and get_state() != "healthy":
         return JSONResponse(status_code=503, content={"detail": "Audit service is not ready"})
@@ -348,25 +335,6 @@ async def quarantine_gate(request: Request, call_next):
             raise
     return await call_next(request)
 
-# Enable CORS for frontend/dashboard access
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[origin.strip() for origin in settings.CORS_ORIGINS.split(",") if origin.strip()],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-# Keep this application-level guard in addition to any deployment-proxy limit.
-# It protects requests whose body length is not declared by Content-Length.
-app.add_middleware(RequestBodyLimitMiddleware, max_bytes=MAX_REQUEST_BODY_BYTES)
-
-# Register routers
-app.include_router(audit_router)
-app.include_router(lifecycle_router)
-app.include_router(compliance_router)
-
-
-@app.get("/health", tags=["Health"])
 def health_check():
     return {
         "status": "healthy" if get_state() == "healthy" else "quarantined",
@@ -375,8 +343,45 @@ def health_check():
     }
 
 
-@app.get("/ready", tags=["Health"])
 def readiness_check():
     if get_state() != "healthy":
         return JSONResponse(status_code=503, content={"status": "not_ready"})
     return {"status": "ready"}
+
+
+def create_app(*, rate_limiter: ConfiguredRateLimiter | None = None) -> FastAPI:
+    """Construct an application with an isolated rate-limiter owner.
+
+    The module-level ``app`` remains the production entry point.  A factory
+    also lets deployment and integration tests create independent application
+    instances while retaining the same router, middleware, and lifespan.
+    """
+    application = FastAPI(
+        title=settings.APP_NAME,
+        version=settings.APP_VERSION,
+        description=(
+            "Production-grade, tamper-evident audit log microservice with cryptographic hash chaining, "
+            "structured redaction, configurable retention policies, and compliance reporting."
+        ),
+        lifespan=lifespan,
+    )
+    application.state.rate_limiter = rate_limiter or ConfiguredRateLimiter()
+    application.add_exception_handler(RequestValidationError, validation_error_handler)
+    application.middleware("http")(quarantine_gate)
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=[origin.strip() for origin in settings.CORS_ORIGINS.split(",") if origin.strip()],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    application.add_middleware(RequestBodyLimitMiddleware, max_bytes=MAX_REQUEST_BODY_BYTES)
+    application.include_router(audit_router)
+    application.include_router(lifecycle_router)
+    application.include_router(compliance_router)
+    application.add_api_route("/health", health_check, methods=["GET"], tags=["Health"])
+    application.add_api_route("/ready", readiness_check, methods=["GET"], tags=["Health"])
+    return application
+
+
+app = create_app(rate_limiter=limiter)

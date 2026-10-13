@@ -96,4 +96,18 @@ jobs:
           AUDIT_RATE_LIMIT_BACKEND: redis
           AUDIT_RATE_LIMIT_REDIS_URL: redis://localhost:6379/15
           AUDIT_RATE_LIMIT_REQUIRED: "1"
-        run: python -m pytest tests/test_rate_limiting_distributed.py -q -rs
+        run: python -m pytest tests/test_rate_limiting_distributed.py -q -rs --junitxml=rate-limit-test-results.xml
+      - name: Require Redis tests to execute
+        shell: bash
+        run: >-
+          python -c "import sys, xml.etree.ElementTree as ET;
+          root=ET.parse('rate-limit-test-results.xml').getroot();
+          skipped=len(root.findall('.//testcase/skipped'));
+          print(f'Redis rate-limit skipped tests: {skipped}');
+          sys.exit(1 if skipped else 0)"
+      - name: Upload Redis test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rate-limit-test-results
+          path: rate-limit-test-results.xml
