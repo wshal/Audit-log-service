@@ -15,18 +15,20 @@
 - **Substantive release scope**: the credential-manifest, signing-key, query-resource, test-cleanup, and documentation changes included in the substantive release commit and now present in merged `main`.
 - **Current CI evidence**: PR #8 workflow run `38342250230` passed for `feef528`; detailed CI test counts were not independently available from the accessible logs.
 
-- **Final merged `main` revision**: `ccc2db2e2c397f8637df0bc61fcb270b3a511a46` (merge commit for PR #10, `security/p0-rate-limit-app-integration`)
-- **PR #10 source revision**: `f062894a0bb12776a583371f84a0ca104e1cd1bb`
-- **Final CI workflow**: [run 38347892406](https://github.com/wshal/Audit-log-service/actions/runs/38347892406), triggered by the merge to `main` and testing `ccc2db2e2c397f8637df0bc61fcb270b3a511a46`; `test`, `postgres-integration`, and `rate-limit-integration` all completed successfully.
-- **Final CI jobs**: [test](https://github.com/wshal/Audit-log-service/actions/runs/38347892406/job/115133419853), [postgres-integration](https://github.com/wshal/Audit-log-service/actions/runs/38347892406/job/115133419904), and [rate-limit-integration](https://github.com/wshal/Audit-log-service/actions/runs/38347892406/job/115133419762).
-- **Final CI artifacts**: `coverage-report` (`sha256:9e1e31709f502616c78e109b1c14e41c685fa5192b77ef8ab445c900106bc6ba`), `postgres-test-results` (`sha256:9723f22b690bc0d7b131dc78cab638b2d39dcbe1f9cf6e42504f09354ab0e41c`), and `rate-limit-test-results` (`sha256:ef753f2d329801afb252c5e732005675e65aadfa3321e1969394758401fc79e5`). The recorded job outputs report 253 passed, 18 skipped, 1 warning for the general suite with 87.18% combined coverage; 22 passed, 0 skipped, 1 warning for PostgreSQL; and 8 passed, 0 skipped, 1 warning for Redis.
+- **Earlier merged `main` baseline**: `ccc2db2e2c397f8637df0bc61fcb270b3a511a46` (merge commit for PR #10, `security/p0-rate-limit-app-integration`); its CI and archive evidence are retained below as historical provenance.
+- **PR #12 source revision**: `3f4e7cc79bec198b6e1965f9be80ac8eec78923b`
+- **Current merged `main` revision**: `8f359cf2401c3a4d5ce29a1fbff930c4006db949` (merge commit for PR #12, `security/credential-lifecycle-logging-linux-ci`)
+- **Current merged CI workflow**: [run 38359546415](https://github.com/wshal/Audit-log-service/actions/runs/38359546415), testing the exact merge commit `8f359cf2401c3a4d5ce29a1fbff930c4006db949`; `test`, `postgres-integration`, `rate-limit-integration`, and `linux-security-controls` all completed successfully.
+- **Current merged CI jobs**: [test](https://github.com/wshal/Audit-log-service/actions/runs/38359546415/job/115170221208), [postgres-integration](https://github.com/wshal/Audit-log-service/actions/runs/38359546415/job/115170220607), [rate-limit-integration](https://github.com/wshal/Audit-log-service/actions/runs/38359546415/job/115170220891), and [linux-security-controls](https://github.com/wshal/Audit-log-service/actions/runs/38359546415/job/115170220907).
+- **Current merged CI evidence boundary**: The workflow run and all four job conclusions are verified. The available unauthenticated interfaces did not expose the JUnit or coverage artifact contents, so no new exact pass/skip counts or coverage percentage are asserted for `8f359cf`; those values remain available only where the corresponding artifacts can be inspected.
 
 ## Dates and sign-off
 
 - **Original development start date**: `2026-10-07`
 - **Original submission date**: `2026-10-07`
 - **PR #7 merge date**: `2026-10-13` (Git commit date for merge revision `d21195c7550bc747e6130b1630d7e721ffe80540`, at `00:28:07 +0530`)
-- **Final merged `main` commit date**: `2026-10-13T10:14:15+05:30` (`ccc2db2e2c397f8637df0bc61fcb270b3a511a46`)
+- **Earlier merged `main` commit date**: `2026-10-13T10:14:15+05:30` (`ccc2db2e2c397f8637df0bc61fcb270b3a511a46`)
+- **Current merged `main` commit date**: `2026-10-13T12:25:49+05:30` (`8f359cf2401c3a4d5ce29a1fbff930c4006db949`)
 - **Attestation/sign-off date**: `2026-10-13` (typed sign-off date for this attestation update)
 
 ## Artifact identity
@@ -57,7 +59,7 @@ attestation is updated in a later metadata-only commit, that later commit is
 not included in this archive and the digest does not cover it. A new archive
 and digest would be required for any later substantive revision.
 
-The final merged code revision has also been archived separately:
+The earlier merged `ccc2db2` code revision was also archived separately:
 
 - **Artifact**: `audit-log-service-v2.0-ccc2db2-20261013.tar`
 - **Source revision**: `ccc2db2e2c397f8637df0bc61fcb270b3a511a46`
@@ -65,7 +67,7 @@ The final merged code revision has also been archived separately:
 - **Archive size**: 747,520 bytes
 - **Generation**: `git archive --format=tar --output=audit-log-service-v2.0-ccc2db2-20261013.tar ccc2db2e2c397f8637df0bc61fcb270b3a511a46`
 
-This final archive covers the committed `ccc2db2` tree only. It does not include
+This historical archive covers the committed `ccc2db2` tree only. It does not include
 this later attestation edit or any subsequent metadata-only attestation commit.
 
 ## Candidate declaration
@@ -86,8 +88,8 @@ third-party verification.
 | Tenant/resource authorization and actor attribution | `app/authorization.py`, `app/security.py`, `app/routers/`, `app/storage/repository.py` | `tests/test_tenant_authorization.py`, `tests/test_security_controls.py` | Implemented and tested in the recorded suites |
 | Hash/signature integrity, V1/V2 compatibility, migration safety | `app/crypto/`, `app/services/verifier.py`, `app/storage/database.py`, `alembic/` | Integrity, migration, and PostgreSQL tests; PR #7 checks successful | Implemented; exact CI test counts not independently available here |
 | PostgreSQL concurrency and rollback | `app/storage/repository.py`, `tests/postgres/test_concurrency.py` | PR #7 `postgres-integration` job succeeded; local required-mode runs recorded in `AI_LOG.md` | Evidence available; detailed PR #7 counts unavailable from accessible logs |
-| Credential, request, rate-limit, idempotency, and quarantine controls | `app/credential_store.py`, `app/main.py`, `app/rate_limit.py`, `app/storage/repository.py`, `app/runtime_state.py` | Named tests in `docs/requirements_test_matrix.md`; final CI run 38347892406 completed the general, PostgreSQL, and Redis jobs | Implemented in prototype scope and present in merged `main`; final job outputs report exact counts, while deployment assumptions remain |
-| Distributed rate limiting | `app/rate_limit.py`, `app/main.py`, `.github/workflows/tests.yml` | Final `rate-limit-integration` job in run 38347892406; application-level integration is included in the merged tree | Redis-backed atomic quota enforcement and fail-closed behavior are implemented and verified by 8 passed, 0 skipped Redis integration tests; production Redis operations remain a deployment responsibility |
+| Credential, request, rate-limit, idempotency, and quarantine controls | `app/credential_store.py`, `app/main.py`, `app/rate_limit.py`, `app/storage/repository.py`, `app/runtime_state.py` | Named tests in `docs/requirements_test_matrix.md`; merged-revision run 38359546415 completed the general, PostgreSQL, Redis, and Linux security jobs | Implemented in prototype scope and present in merged `main`; exact merged-run counts require artifact inspection, while deployment assumptions remain |
+| Distributed rate limiting | `app/rate_limit.py`, `app/main.py`, `.github/workflows/tests.yml` | Merged-revision `rate-limit-integration` job in run 38359546415; application-level integration is included in the merged tree | Redis-backed atomic quota enforcement and fail-closed behavior are implemented; the earlier merged baseline recorded 8 passed/0 skipped Redis tests, while exact counts for the current merge run require artifact inspection; production Redis operations remain a deployment responsibility |
 | Local signed checkpoint comparison | `app/checkpoint.py`, `app/services/checkpoint_verifier.py` | `tests/test_checkpoints.py` | Local verification only; no external immutable trust anchor |
 | Endpoint inventory and threat model | `docs/endpoint_security_inventory.md`, `docs/threat_model.md`, `tests/test_endpoint_inventory.py` | Route inventory and boundary tests | Documentation and executable inventory present |
 
@@ -97,6 +99,6 @@ third-party verification.
 - Distributed rate limiting uses the configured Redis backend and was exercised by the final `rate-limit-integration` job; Redis availability and fail-closed deployment configuration remain operational requirements.
 - Checkpoints are locally verified signed objects; external publication, immutable storage, key custody, and independent detection of every valid-prefix tail truncation are not implemented.
 - The project-specific Python JSON serialization format is not RFC 8785/JCS.
-- PostgreSQL and Redis CI success is recorded for merged revision `ccc2db2` in workflow run `38347892406`: PostgreSQL 22 passed/0 skipped and Redis 8 passed/0 skipped, each with the existing warning. The general suite reported 253 passed/18 skipped, 1 warning, and 87.18% combined coverage. Local results are not substituted for this CI evidence.
-- The final archive digest above identifies the `ccc2db2` code tree only; it does not cover this later metadata-only attestation update.
+- Historical PostgreSQL, Redis, and general-suite counts above are evidence for merged revision `ccc2db2` in workflow run `38347892406`; they are not counts for the current `8f359cf` merge run. The current run's job success is verified, but its artifact contents were not available through the unauthenticated interfaces used for this update.
+- The historical archive digest above identifies the `ccc2db2` code tree only; it does not cover this later metadata-only attestation update or the current `8f359cf` merge commit.
 - The attestation is not itself a cryptographic signature, archive digest, or proof of independent third-party review.
