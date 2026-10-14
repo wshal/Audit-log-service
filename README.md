@@ -30,6 +30,35 @@ This service guarantees an append-only, tamper-evident audit ledger:
    - Sensitive fields within `payload` (e.g., SSN, account numbers) can be masked without invalidating the parent block's cryptographic hash.
    - Designed using per-field cryptographic commitments (salted field hashing).
 
+### End-to-end request and integrity flow
+
+1. **Ingress protection**: request-size middleware rejects oversized bodies;
+   rate limiting runs before route work and uses authenticated credential
+   identity when available.
+2. **Authentication and authorization**: the API key resolves to a validated
+   principal. Roles, tenant grants, resource ownership, legacy capabilities,
+   and actor attribution are checked before a protected operation proceeds.
+3. **Transactional write**: the repository acquires the ledger lock, allocates
+   a contiguous sequence, computes the hash/signature envelope, and commits
+   the record, ledger state, and idempotency record together where applicable.
+4. **Lifecycle and compliance**: retention, redaction, export, and compliance
+   operations append lifecycle evidence rather than silently rewriting history;
+   scope and PII capabilities are enforced independently.
+5. **Verification and readiness**: full-chain verification checks hashes,
+   signatures, transitions, lifecycle witnesses, and ledger state. Startup
+   failures quarantine the service and make readiness unavailable until the
+   documented recovery path succeeds.
+6. **Operational evidence**: PostgreSQL and Redis integrations are separate
+   guarded suites. External checkpoint storage, managed key custody, TLS/proxy
+   configuration, backups, and monitoring remain deployment responsibilities.
+
+The detailed endpoint contract is in
+[`docs/endpoint_security_inventory.md`](docs/endpoint_security_inventory.md);
+credential operations are described in
+[`docs/credential_lifecycle.md`](docs/credential_lifecycle.md), and the
+requirement-to-test mapping is maintained in
+[`docs/requirements_test_matrix.md`](docs/requirements_test_matrix.md).
+
 ---
 
 ## 3. Tech Stack
@@ -58,7 +87,12 @@ This service guarantees an append-only, tamper-evident audit ledger:
 │   ├── final_engineering_summary.md  # Final engineering summary and risk analysis
 │   ├── endpoint_security_inventory.md # Endpoint authorization inventory
 │   ├── threat_model.md                # Threat model and deployment assumptions
-│   └── scenario_c_normalization.md   # Requirement normalization and scope boundary
+│   ├── credential_lifecycle.md        # Credential lifecycle and operator contract
+│   ├── api_abuse_controls.md          # Request-size and rate-limit contract
+│   ├── requirements_test_matrix.md    # Requirement-to-test evidence matrix
+│   ├── release_gap_register.md        # Open release and deployment gaps
+│   ├── supply_chain.md                # Dependency-lock and CI supply-chain policy
+│   └── scenario_c_normalization.md    # Requirement normalization and scope boundary
 ├── app/
 │   ├── __init__.py
 │   ├── main.py                       # FastAPI application entrypoint
@@ -83,6 +117,8 @@ This service guarantees an append-only, tamper-evident audit ledger:
 │       ├── audit.py                  # Core endpoints (Write, Query, Verify)
 │       ├── lifecycle.py              # Lifecycle endpoints (Retention, Redact, Export)
 │       └── compliance.py             # Compliance endpoints (Client access report)
+├── alembic/
+│   └── versions/                      # Ordered schema migrations
 └── tests/
     ├── conftest.py                   # Test fixtures and database isolation
     ├── test_scenario_a.py            # Scenario A tests (Write, Query, Verify, Tamper Detection)
@@ -90,7 +126,9 @@ This service guarantees an append-only, tamper-evident audit ledger:
     ├── test_scenario_c.py            # Scenario C tests (Compliance reports & Anomaly detection)
     ├── test_integrity_regressions.py # Concurrency, timestamp, and redaction regression tests
     ├── test_endpoint_inventory.py    # Executable endpoint and request-boundary inventory
-    └── test_security_controls.py     # Auth, RBAC, Ed25519 signatures & witness tests
+    ├── test_security_controls.py      # Auth, RBAC, Ed25519 signatures & witness tests
+    ├── test_checkpoints.py            # Versioned checkpoint contract/verifier tests
+    └── postgres/                      # Guarded PostgreSQL migration/concurrency tests
 ```
 
 ---
@@ -180,8 +218,8 @@ python -m compileall -q app tests
 ```
 The earlier PostgreSQL-unconfigured working-tree run contained **249 passed,
 12 skipped** tests; the twelve skips were PostgreSQL database-backed tests.
-With the guarded PostgreSQL environment configured, the latest current
-working-tree full suite contains **261 passed, 0 skipped** tests. The focused
+With the guarded PostgreSQL environment configured, a prior working-tree
+validation contained **261 passed, 0 skipped** tests. The focused
 endpoint/integrity/security run contains
 **99 passed, 1 warning**. The warning is the existing Starlette/httpx
 deprecation warning. Compilation and `git diff --check` passed. The current
@@ -209,12 +247,13 @@ and [postgres-integration job](https://github.com/wshal/Audit-log-service/action
 passed for source commit `76e9321`; the [standard test job](https://github.com/wshal/Audit-log-service/actions/runs/38293842786/job/114960061509)
 also passed. The merge revision is `d21195c`. Detailed CI test counts were not
 independently available from the accessible job logs, so no CI count is claimed.
-The current guarded PostgreSQL 16.15 execution ran `tests/postgres` against the
+That guarded PostgreSQL 16.15 execution ran `tests/postgres` against the
 isolated `audit_test` database: **22 passed, zero skipped, 1 warning**. The
 password was supplied through `PGPASSFILE` outside the repository. These results
-apply to the current uncommitted working tree; no current CI result is claimed.
+apply to that historical working-tree validation; no current local or CI result
+is claimed for the later documentation-only `main` commits.
 
-The merged `main` revision `ccc2db2e2c397f8637df0bc61fcb270b3a511a46` was
+The merged application revision `ccc2db2e2c397f8637df0bc61fcb270b3a511a46` was
 validated by [workflow run 38347892406](https://github.com/wshal/Audit-log-service/actions/runs/38347892406).
 Its recorded outputs were **253 passed, 18 skipped, 1 warning** and **87.18%
 combined coverage** for the general suite, **22 passed, 0 skipped, 1 warning**
@@ -223,7 +262,7 @@ rate limiting. The 18 general-suite skips are not counted as passes. The
 separate required PostgreSQL and Redis jobs used
 required-mode guards that fail if their integration tests skip.
 
-The current Phase B checkpoint contract is implemented in `app/checkpoint.py`
+The current committed Phase B checkpoint contract is implemented in `app/checkpoint.py`
 and `app/services/checkpoint_verifier.py`, with focused coverage in
 `tests/test_checkpoints.py`. It validates a version-1 signed checkpoint and
 invokes the authoritative full-ledger verifier before returning
@@ -231,7 +270,10 @@ invokes the authoritative full-ledger verifier before returning
 external storage immutability, latest-checkpoint proof, export-completeness
 proof, or detection of valid tail truncation beyond the available trusted
 checkpoint. Checkpoint publication, immutable external storage, key custody,
-and outage policy remain unimplemented design decisions.
+and outage policy remain unimplemented design decisions. The current `main`
+HEAD is `0c1f9837251e43db6e04dfe203233b08227b1f31`, which adds later
+supply-chain and attestation-documentation commits; the test counts above do
+not claim fresh CI execution for that later revision.
 
 See [docs/audit_review.md](docs/audit_review.md) for the implementation audit and hardening record.
 For a copy/paste clean-database walkthrough of every scenario with expected outputs, see [docs/manual_validation.md](docs/manual_validation.md).
